@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
 project(te)
-add_executable(te te.cpp screen.cpp)
+set(CMAKE_CXX_STANDARD 20)
+add_executable(te te.cpp screen.cpp child.cpp)
 target_link_libraries(te PUBLIC SDL2 SDL2_ttf)

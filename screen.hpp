@@ -26,7 +26,7 @@ union Color {
 
 struct ScreenConfig {
   std::string font_file = "/usr/share/fonts/TTF/DejaVuSansMono.ttf";
-  int font_size = 72;
+  int font_size = 36;
 
   // ABGR little endian: 0xAABBGGRR
   Color background_color = Color{0xffffffff};
@@ -36,9 +36,14 @@ struct ScreenConfig {
 
 class Screen {
  public:
-  explicit Screen(ScreenConfig config);
+  explicit Screen(ScreenConfig config, char **envp);
   void loop();
   ~Screen();
+
+  void receive_char(uint8_t c);
+
+  void set_window_size(int w, int h);
+  void process_csi();
  private:
   ScreenConfig config_;
 
@@ -46,8 +51,21 @@ class Screen {
   SDL_Renderer *renderer_ = nullptr;
   TTF_Font *font_ = nullptr;
 
-  std::mutex lock_;
   std::vector<std::string> buffer_;
+  int tty_fd_ = -1;
+  int child_pid_ = 0;
+  int max_lines_ = 40;
+  int max_cols_ = 80;
+
+
+  enum class InputState {
+    Idle,
+    Escape,
+    CSI
+  };
+
+  InputState input_state = InputState::Idle;
+  std::vector<std::uint8_t> csi_buffer_;
 };
 
 }
