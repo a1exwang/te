@@ -22,14 +22,14 @@ using std::endl;
 
 namespace te {
 
-Screen::Screen(ScreenConfig config, char **envp) :config_(std::move(config)), buffer_(1) {
+Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
 
   if (SDL_Init( SDL_INIT_EVERYTHING ) != 0) {
     std::cerr << "Error initializing SDL: " << SDL_GetError() << std::endl;
     abort();
   }
 
-  window_ = SDL_CreateWindow( "a1ex's te", 100, 100, 1920, 1080, SDL_WINDOW_SHOWN );
+  window_ = SDL_CreateWindow( "a1ex's te", 0, 0, config_.resolution_w, config_.resolution_h, SDL_WINDOW_SHOWN );
   if (window_ == nullptr) {
     cerr << "Error creating window: " << SDL_GetError()  << endl;
     abort();
@@ -50,7 +50,24 @@ Screen::Screen(ScreenConfig config, char **envp) :config_(std::move(config)), bu
     abort();
   }
 
-  std::string program = "/bin/sh";
+  if (!TTF_FontFaceIsFixedWidth(font_)) {
+    cerr << "font is not Fixed width" << std::endl;
+    abort();
+  }
+
+  int minx, maxx, miny, maxy, advance;
+  if (TTF_GlyphMetrics(font_, 'a', &minx, &maxx, &miny, &maxy, &advance) != 0) {
+    cerr << "Error TTF_GlyphMetrics " << TTF_GetError() << std::endl;
+    abort();
+  }
+
+  glyph_width_ = advance;
+  glyph_height_ = TTF_FontLineSkip(font_);
+
+  max_lines_ = config_.resolution_h / glyph_height_;
+  max_cols_ = config_.resolution_w / glyph_width_;
+
+  std::string program = "/bin/bash";
   char *argv[] = {(char*)program.c_str(), nullptr};
   std::vector<char*> envps;
   std::vector<std::string> envs;
@@ -65,7 +82,14 @@ Screen::Screen(ScreenConfig config, char **envp) :config_(std::move(config)), bu
     envps.push_back((char*)env.c_str());
   }
   std::tie(child_pid_, tty_fd_) = start_child(program, argv, envps.data());
+
   set_window_size(max_cols_, max_lines_);
+
+  resize_lines();
+}
+
+SDL_Color to_sdl_color(Color color) {
+  return SDL_Color{color.r, color.g, color.b, color.a};
 }
 
 void Screen::loop() {
@@ -85,12 +109,12 @@ void Screen::loop() {
             auto c = event.key.keysym.sym;
             if (c == '\r') {
               input_buffer.push_back('\n');
-              std::cout << "enter" << std::endl;
+//              std::cout << "enter" << std::endl;
             } else if (c < 0x100 /*NOTE: if c >=0x100, isprint is UB*/ && std::isprint(c)) {
               input_buffer.push_back(c);
-              std::cout << "key '" << c << std::endl;
+//              std::cout << "key '" << c << std::endl;
             } else {
-              cerr << "unknown key " << c << std::endl;
+//              cerr << "unknown key " << c << std::endl;
             }
           }
           break;
@@ -99,74 +123,37 @@ void Screen::loop() {
     }
 
     if (child_pid_) {
-      // Check if child exited
-      siginfo_t siginfo;
-      siginfo.si_pid = 0;
-      if (waitid(P_PID, child_pid_, &siginfo, WEXITED | WNOHANG) < 0) {
-        perror("waitid");
-        abort();
-      }
-      if (siginfo.si_pid != 0) {
-        child_pid_ = 0;
-        loop_continue = false;
-      }
-
-      // write pending input data
-      if (!input_buffer.empty()) {
-        int total_write = 0;
-        while (total_write < input_buffer.size()) {
-          int nwrite = write(tty_fd_, input_buffer.data(), input_buffer.size());
-          if (nwrite < 0) {
-            if (!(errno == EAGAIN || errno == EWOULDBLOCK)) {
-              perror("write");
-              abort();
-            }
-          } else {
-            total_write += nwrite;
-          }
-        }
-        input_buffer.clear();
-      }
-
-      char data[100];
-      int nread = read(tty_fd_, data, 80);
-      for (int i = 0; i < nread; i++) {
-        receive_char(data[i]);
-      }
-
+      loop_continue = check_child_process();
+      write_pending_input_data(input_buffer);
+      process_input();
     }
 
-    SDL_SetRenderDrawColor(
-        renderer_,
-        config_.background_color.r,
-        config_.background_color.g,
-        config_.background_color.b,
-        config_.background_color.a
-    );
+    SDL_SetRenderDrawColor(renderer_, 0,0,0,0xff);
     SDL_RenderClear(renderer_);
-    SDL_Color foreground = { config_.foreground_color.r, config_.foreground_color.g, config_.foreground_color.b };
 
-    int start_line = 0;
-    if (buffer_.size() > max_lines_) {
-      start_line = buffer_.size() - max_lines_;
-    }
+    for (int i = 0; i < lines_.size(); i++) {
+      auto &line = lines_[i];
+      for (int j = 0; j < line.size(); j++) {
+        auto &c = line[j];
 
-    for (int i = start_line; i < buffer_.size(); i++) {
-      int rows_to_top = i - start_line;
-      auto &line = buffer_[i];
-      if (!line.empty()) {
-        SDL_Surface* text_surf = TTF_RenderText_Blended(font_, line.c_str(), foreground);
-        auto text = SDL_CreateTextureFromSurface(renderer_, text_surf);
+        SDL_SetRenderDrawColor(renderer_, c.bg_color.r, c.bg_color.g, c.bg_color.b, c.bg_color.a);
+        SDL_Rect glyph_box{glyph_width_*j, glyph_height_*i, glyph_width_, glyph_height_};
+        SDL_RenderFillRect(renderer_, &glyph_box);
 
-        SDL_Rect dest;
-        dest.x = 0;
-        dest.y = rows_to_top * config_.font_size;
-        dest.w = text_surf->w;
-        dest.h = text_surf->h;
-        SDL_RenderCopy(renderer_, text, NULL, &dest);
+        if (std::isprint(c.c) && c.c != ' ') {
+//          std::cout << "draw " << c.c << " at " << i << " " << j << std::endl;
+          SDL_Surface* text_surf = TTF_RenderGlyph_Blended(font_, c.c, to_sdl_color(c.fg_color));
+          if (!text_surf) {
+            std::cerr << "Failed to TTF_RenderGlyph_Blended" << SDL_GetError() << std::endl;
+            abort();
+          }
+          auto text = SDL_CreateTextureFromSurface(renderer_, text_surf);
 
-        SDL_DestroyTexture(text);
-        SDL_FreeSurface(text_surf);
+          SDL_RenderCopy(renderer_, text, NULL, &glyph_box);
+          SDL_DestroyTexture(text);
+          SDL_FreeSurface(text_surf);
+        }
+
       }
     }
 
@@ -196,52 +183,124 @@ void Screen::set_window_size(int w, int h) {
   screen_size.ws_xpixel = 1920;
   screen_size.ws_ypixel = 1080;
 
-  ioctl(tty_fd_, TIOCSWINSZ, &screen_size);
+  if (ioctl(tty_fd_, TIOCSWINSZ, &screen_size) < 0) {
+    perror("ioctl TIOCSWINSZ");
+    abort();
+  }
 }
 
 bool is_final_byte(uint8_t c) {
   return c >= 0x40 && c <= 0x7E;
 }
 
-void Screen::receive_char(uint8_t c) {
+TTYInputType TTYInput::receive_char(uint8_t c) {
+  last_char_ = '?';
   if (input_state == InputState::Escape) {
     if (c == '[') {
+      csi_buffer_.clear();
       input_state = InputState::CSI;
+      return TTYInputType::Intermediate;
     } else if (c == 0x1b) {
       input_state = InputState::Escape;
+      return TTYInputType::Intermediate;
     } else {
+      last_char_ = c;
       input_state = InputState::Idle;
+      return TTYInputType::Char;
     }
   } else if (input_state == InputState::Idle) {
     if (c == 0x1b) {
       input_state = InputState::Escape;
+      return TTYInputType::Intermediate;
     } else {
-      if (c == '\n') {
-        buffer_.emplace_back();
-      } else if (c == '\r') {
+//      std::cout << "receive char " << std::hex << (int)c;
+//      if (std::isprint(c)) {
+//        std::cout << " (" << c <<")";
+//      }
+//      std::cout << std::endl;
+
+      if (c == '\n' || std::isprint(c)) {
+        last_char_ = c;
+        return TTYInputType::Char;
       } else {
-        buffer_.back().push_back(c);
+        return TTYInputType::Intermediate;
       }
-      std::cout << "receive char " << std::hex << (int)c;
-      if (std::isprint(c)) {
-        std::cout << " (" << c <<")";
-      }
-      std::cout << std::endl;
     }
   } else {
     // CSI:
     csi_buffer_.push_back(c);
 
-    process_csi();
-
     if (is_final_byte(c)) {
-      csi_buffer_.clear();
+      input_state = InputState::Idle;
+      return TTYInputType::CSI;
+    } else {
+      return TTYInputType::Intermediate;
     }
   }
 
 }
-void Screen::process_csi() {
+void Screen::process_csi(const std::vector<uint8_t> &seq) {
 
+  std::cout << "csi seq ESC [ ";
+  for (auto c : seq) {
+    std::cout << c;
+  }
+  std::cout << std::endl;
+
+}
+void Screen::process_input() {
+  int nread = read(tty_fd_, input_buffer_.data(), input_buffer_.size());
+  for (int i = 0; i < nread; i++) {
+    auto input_type = tty_input_.receive_char(input_buffer_[i]);
+    if (input_type == TTYInputType::Char) {
+      auto c = tty_input_.last_char_;
+      if (c == '\n') {
+        new_line();
+      } else {
+
+//        std::cout << "get char " << c << " at " << cursor_row << " " << cursor_col << std::endl;
+        lines_[cursor_row][cursor_col].c = c;
+        lines_[cursor_row][cursor_col].bg_color = current_bg_color;
+        lines_[cursor_row][cursor_col].fg_color = current_fg_color;
+        next_cursor();
+      }
+    } else if (input_type == TTYInputType::CSI) {
+      process_csi(tty_input_.csi_buffer_);
+    }
+  }
+}
+bool Screen::check_child_process() {
+  siginfo_t siginfo;
+  siginfo.si_pid = 0;
+  if (waitid(P_PID, child_pid_, &siginfo, WEXITED | WNOHANG) < 0) {
+    perror("waitid");
+    abort();
+  }
+  if (siginfo.si_pid != 0) {
+    child_pid_ = 0;
+    return false;
+  } else {
+    return true;
+  }
+
+}
+void Screen::write_pending_input_data(std::vector<uint8_t> &input_buffer) {
+
+  if (!input_buffer.empty()) {
+    int total_write = 0;
+    while (total_write < input_buffer.size()) {
+      int nwrite = write(tty_fd_, input_buffer.data(), input_buffer.size());
+      if (nwrite < 0) {
+        if (!(errno == EAGAIN || errno == EWOULDBLOCK)) {
+          perror("write");
+          abort();
+        }
+      } else {
+        total_write += nwrite;
+      }
+    }
+    input_buffer.clear();
+  }
 }
 
 }
