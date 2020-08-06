@@ -1,9 +1,12 @@
 #include "screen.hpp"
 
+#include <cassert>
+
 #include <vector>
 #include <string>
 #include <iostream>
 #include <chrono>
+#include <sstream>
 
 #include <SDL2/SDL.h> // For Events
 #include <SDL2/SDL_syswm.h>
@@ -140,9 +143,14 @@ void Screen::loop() {
         SDL_Rect glyph_box{glyph_width_*j, glyph_height_*i, glyph_width_, glyph_height_};
         SDL_RenderFillRect(renderer_, &glyph_box);
 
-        if (std::isprint(c.c) && c.c != ' ') {
+        auto character = c.c;
+        if (!std::isprint(c.c) && character != 0) {
+          character = '?';
+        }
+
+        if (character != ' ' && character != 0) {
 //          std::cout << "draw " << c.c << " at " << i << " " << j << std::endl;
-          SDL_Surface* text_surf = TTF_RenderGlyph_Blended(font_, c.c, to_sdl_color(c.fg_color));
+          SDL_Surface* text_surf = TTF_RenderGlyph_Blended(font_, character, to_sdl_color(c.fg_color));
           if (!text_surf) {
             std::cerr << "Failed to TTF_RenderGlyph_Blended" << SDL_GetError() << std::endl;
             abort();
@@ -153,7 +161,6 @@ void Screen::loop() {
           SDL_DestroyTexture(text);
           SDL_FreeSurface(text_surf);
         }
-
       }
     }
 
@@ -180,8 +187,8 @@ void Screen::set_window_size(int w, int h) {
   winsize screen_size;
   screen_size.ws_col = w;
   screen_size.ws_row = h;
-  screen_size.ws_xpixel = 1920;
-  screen_size.ws_ypixel = 1080;
+  screen_size.ws_xpixel = config_.resolution_w;
+  screen_size.ws_ypixel = config_.resolution_h;
 
   if (ioctl(tty_fd_, TIOCSWINSZ, &screen_size) < 0) {
     perror("ioctl TIOCSWINSZ");
@@ -213,12 +220,6 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
       input_state = InputState::Escape;
       return TTYInputType::Intermediate;
     } else {
-//      std::cout << "receive char " << std::hex << (int)c;
-//      if (std::isprint(c)) {
-//        std::cout << " (" << c <<")";
-//      }
-//      std::cout << std::endl;
-
       if (c == '\n' || std::isprint(c)) {
         last_char_ = c;
         return TTYInputType::Char;
@@ -239,6 +240,42 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
   }
 
 }
+
+// parse format 123;444;;22
+std::vector<int> parse_csi_ints(const std::vector<uint8_t> &seq, int start, int end) {
+  std::string s;
+  std::vector<int> result;
+  for (int i = start; i < end; i++) {
+    if (std::isdigit(seq[i])) {
+      s.push_back(seq[i]);
+    } else if (seq[i] == ';') {
+      if (s.empty()) {
+        result.push_back(0);
+      } else {
+        result.push_back(std::stoi(s));
+      }
+      s.clear();
+    }
+  }
+  if (s.empty()) {
+    result.push_back(0);
+  } else {
+    result.push_back(std::stoi(s));
+  }
+  return result;
+}
+
+Color pallete[] = {
+    ColorBlack,
+    ColorRed,
+    ColorGreen,
+    ColorYellow,
+    ColorBlue,
+    ColorMagnenta,
+    ColorCyan,
+    ColorWhite
+};
+
 void Screen::process_csi(const std::vector<uint8_t> &seq) {
 
   std::cout << "csi seq ESC [ ";
@@ -247,18 +284,41 @@ void Screen::process_csi(const std::vector<uint8_t> &seq) {
   }
   std::cout << std::endl;
 
+  if (!seq.empty()) {
+    auto op = seq.back();
+    if (op == 'm') {
+      auto ints = parse_csi_ints(seq, 0, seq.size() - 1);
+      assert(!ints.empty());
+      for (auto i : ints) {
+        if (i == 0) {
+          std::cout << "CSI reset attributes" << std::endl;
+          current_fg_color = get_default_fg_color();
+          current_bg_color = get_default_bg_color();
+        } else if (30 <= i && i < 38) {
+          current_fg_color = pallete[i - 30];
+          std::cout << "CSI set fg color" << std::endl;
+        } else if (40 <= i && i < 48) {
+          current_bg_color = pallete[i - 30];
+          std::cout << "CSI set bg color" << std::endl;
+        }
+      }
+    }
+
+  }
+
 }
 void Screen::process_input() {
   int nread = read(tty_fd_, input_buffer_.data(), input_buffer_.size());
   for (int i = 0; i < nread; i++) {
     auto input_type = tty_input_.receive_char(input_buffer_[i]);
+
     if (input_type == TTYInputType::Char) {
       auto c = tty_input_.last_char_;
       if (c == '\n') {
         new_line();
       } else {
 
-//        std::cout << "get char " << c << " at " << cursor_row << " " << cursor_col << std::endl;
+        std::cout << "get char " << c << " at " << cursor_row << " " << cursor_col << std::endl;
         lines_[cursor_row][cursor_col].c = c;
         lines_[cursor_row][cursor_col].bg_color = current_bg_color;
         lines_[cursor_row][cursor_col].fg_color = current_fg_color;

@@ -25,6 +25,12 @@ union Color {
 #pragma pack(pop)
 constexpr Color ColorWhite = Color{0xffffffff};
 constexpr Color ColorBlack = Color{0xff000000};
+constexpr Color ColorRed = Color{0xffcc0000};
+constexpr Color ColorGreen = Color{0xff00cc00};
+constexpr Color ColorBlue = Color{0xff0000cc};
+constexpr Color ColorYellow = Color{0xff888800};
+constexpr Color ColorCyan = Color{0xff008888};
+constexpr Color ColorMagnenta = Color{0xff880088};
 
 
 struct ScreenConfig {
@@ -93,13 +99,19 @@ class Screen {
     }
     cursor_col = 0;
   }
-
   void next_cursor() {
     if (cursor_col == max_cols_ - 1) {
       new_line();
     } else {
       cursor_col++;
     }
+  }
+
+  Color get_default_fg_color() const {
+    return ColorWhite;
+  }
+  Color get_default_bg_color() const {
+    return ColorBlack;
   }
  private:
   ScreenConfig config_;
