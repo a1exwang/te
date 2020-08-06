@@ -30,20 +30,21 @@ constexpr Color ColorGreen = Color{0xff00cc00};
 constexpr Color ColorBlue = Color{0xff0000cc};
 constexpr Color ColorYellow = Color{0xff888800};
 constexpr Color ColorCyan = Color{0xff008888};
-constexpr Color ColorMagnenta = Color{0xff880088};
+constexpr Color ColorMagenta = Color{0xff880088};
 
 
 struct ScreenConfig {
   std::string font_file = "/usr/share/fonts/TTF/DejaVuSansMono.ttf";
   int font_size = 36;
 
-  int resolution_w = 1920;
-  int resolution_h = 1080;
+  int resolution_w = 1440;
+  int resolution_h = 1440;
 };
 
 enum class TTYInputType {
   Char,
   CSI,
+  OSC,
   Unknown,
   Intermediate
 };
@@ -55,11 +56,12 @@ class TTYInput {
     Idle,
     Escape,
     CSI,
+    OSC,
   };
 
   InputState input_state = InputState::Idle;
   char last_char_;
-  std::vector<std::uint8_t> csi_buffer_;
+  std::vector<std::uint8_t> buffer_;
 };
 
 struct Char {

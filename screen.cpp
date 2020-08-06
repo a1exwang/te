@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include <iomanip>
 #include <chrono>
 #include <sstream>
 
@@ -95,13 +96,32 @@ SDL_Color to_sdl_color(Color color) {
   return SDL_Color{color.r, color.g, color.b, color.a};
 }
 
+char shift_table[] = {
+    // 0
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+
+    // digit
+    ')','!','@','#', '$','%','^','&', '*','(',0,':', 0,'+',0,0,
+
+    // 0x40 upper case
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 0,0,0,'{', '|',']',0,0,
+    '~',0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+};
+
 void Screen::loop() {
 
   SDL_Event event;
   std::chrono::high_resolution_clock::time_point last_t;
   std::vector<uint8_t> input_buffer;
   bool loop_continue = true;
+
   while (loop_continue) {
+    bool has_input = false;
+    auto t0 = std::chrono::high_resolution_clock::now();
     while (SDL_PollEvent(&event)) {
       switch (event.type) {
         case SDL_QUIT: {
@@ -109,12 +129,34 @@ void Screen::loop() {
           break;
         case SDL_KEYDOWN:
           if (event.key.type == SDL_KEYDOWN) {
+            has_input = true;
             auto c = event.key.keysym.sym;
-            if (c == '\r') {
+            if (event.key.keysym.sym == SDL_KeyCode::SDLK_BACKSPACE) {
+              // delete key
+              input_buffer.push_back('\x7f');
+            } else if (c == SDL_KeyCode::SDLK_RETURN) {
               input_buffer.push_back('\n');
-//              std::cout << "enter" << std::endl;
             } else if (c < 0x100 /*NOTE: if c >=0x100, isprint is UB*/ && std::isprint(c)) {
-              input_buffer.push_back(c);
+              auto mod = event.key.keysym.mod;
+              if (mod == KMOD_LSHIFT || mod == KMOD_RSHIFT) {
+                if (std::isalpha(c)) {
+                  input_buffer.push_back(std::toupper(c));
+                } else if (c < 0x80 && shift_table[c] != 0) {
+                  input_buffer.push_back(shift_table[c]);
+                } else {
+                  input_buffer.push_back(c);
+                }
+              } else if (mod == KMOD_LCTRL || mod == KMOD_RCTRL) {
+                if (std::isalpha(c)) {
+                  input_buffer.push_back(c - 'a' + 1);
+                } else if (0x5b <= c && c < 0x60) {
+                  input_buffer.push_back(c - 0x40);
+                } else {
+                  input_buffer.push_back(c);
+                }
+              } else {
+                input_buffer.push_back(c);
+              }
 //              std::cout << "key '" << c << std::endl;
             } else {
 //              cerr << "unknown key " << c << std::endl;
@@ -167,7 +209,10 @@ void Screen::loop() {
     // Update window
     SDL_RenderPresent(renderer_);
     auto now = std::chrono::high_resolution_clock::now();
-//    std::cout << "latency " << std::chrono::duration<float, std::milli>(now - last_t).count() << "ms" << std::endl;
+    if (has_input) {
+      std::cout << "Input latency " << std::chrono::duration<float, std::milli>(now - t0).count() << "ms" << std::endl;
+    }
+
     last_t = now;
   }
 }
@@ -204,8 +249,14 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
   last_char_ = '?';
   if (input_state == InputState::Escape) {
     if (c == '[') {
-      csi_buffer_.clear();
+      // CSI
+      buffer_.clear();
       input_state = InputState::CSI;
+      return TTYInputType::Intermediate;
+    } else if (c == ']') {
+      // Operating System Control
+      buffer_.clear();
+      input_state = InputState::OSC;
       return TTYInputType::Intermediate;
     } else if (c == 0x1b) {
       input_state = InputState::Escape;
@@ -220,16 +271,12 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
       input_state = InputState::Escape;
       return TTYInputType::Intermediate;
     } else {
-      if (c == '\n' || std::isprint(c)) {
-        last_char_ = c;
-        return TTYInputType::Char;
-      } else {
-        return TTYInputType::Intermediate;
-      }
+      last_char_ = c;
+      return TTYInputType::Char;
     }
-  } else {
+  } else if (input_state == InputState::CSI) {
     // CSI:
-    csi_buffer_.push_back(c);
+    buffer_.push_back(c);
 
     if (is_final_byte(c)) {
       input_state = InputState::Idle;
@@ -237,6 +284,16 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
     } else {
       return TTYInputType::Intermediate;
     }
+  } else if (input_state == InputState::OSC) {
+    if (c == '\a') {
+      input_state = InputState::Idle;
+      return TTYInputType::OSC;
+    } else {
+      buffer_.push_back(c);
+      return TTYInputType::Intermediate;
+    }
+  } else {
+    assert(0);
   }
 
 }
@@ -271,7 +328,7 @@ Color pallete[] = {
     ColorGreen,
     ColorYellow,
     ColorBlue,
-    ColorMagnenta,
+    ColorMagenta,
     ColorCyan,
     ColorWhite
 };
@@ -310,22 +367,45 @@ void Screen::process_csi(const std::vector<uint8_t> &seq) {
 void Screen::process_input() {
   int nread = read(tty_fd_, input_buffer_.data(), input_buffer_.size());
   for (int i = 0; i < nread; i++) {
+    {
+      auto c = input_buffer_[i];
+      std::cout << "read() at (" << std::dec << cursor_row << "," << cursor_col << "): 0x" <<
+                std::setw(2) << std::setfill('0') << std::hex << (int)c;
+      if (std::isprint(c) && c != '\n') {
+        std::cout << " '" << c << '\'';
+      }
+      std::cout << std::endl;
+    }
     auto input_type = tty_input_.receive_char(input_buffer_[i]);
 
     if (input_type == TTYInputType::Char) {
       auto c = tty_input_.last_char_;
       if (c == '\n') {
         new_line();
+      } else if (c == '\r') {
+      } else if (c == '\a') {
+        std::cout << "alarm" << std::endl;
+      } else if (c == '\b') {
+        std::cout << "back space" << std::endl;
+        if (cursor_col == 0) {
+          if (cursor_row == 0) {
+            // nothing
+          } else {
+            cursor_col = max_cols_ - 1;
+            cursor_row--;
+          }
+        } else {
+          cursor_col--;
+        }
+        lines_[cursor_row][cursor_col] = Char();
       } else {
-
-        std::cout << "get char " << c << " at " << cursor_row << " " << cursor_col << std::endl;
         lines_[cursor_row][cursor_col].c = c;
         lines_[cursor_row][cursor_col].bg_color = current_bg_color;
         lines_[cursor_row][cursor_col].fg_color = current_fg_color;
         next_cursor();
       }
     } else if (input_type == TTYInputType::CSI) {
-      process_csi(tty_input_.csi_buffer_);
+      process_csi(tty_input_.buffer_);
     }
   }
 }
