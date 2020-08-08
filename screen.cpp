@@ -44,6 +44,9 @@ void set_tty_window_size(int tty_fd, int cols, int rows, int res_w, int res_h) {
 
 Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
 
+  log_stream.rdbuf()->pubsetbuf(0, 0);
+  log_stream.open("a.log");
+
   if (SDL_Init( SDL_INIT_EVERYTHING ) != 0) {
     std::cerr << "Error initializing SDL: " << SDL_GetError() << std::endl;
     abort();
@@ -147,6 +150,7 @@ void Screen::loop() {
   while (loop_continue) {
     bool has_input = false;
     auto t0 = std::chrono::high_resolution_clock::now();
+    // Process SDL events
     while (SDL_PollEvent(&event)) {
       switch (event.type) {
         case SDL_QUIT: {
@@ -160,6 +164,28 @@ void Screen::loop() {
           }
           break;
         }
+        case SDL_MOUSEBUTTONDOWN: {
+          if (event.button.button == SDL_BUTTON(SDL_BUTTON_LEFT)) {
+            has_selection = true;
+            mouse_left_button_down = true;
+            std::tie(selection_start_row, selection_start_col) = window_to_console(event.button.x, event.button.y);
+            selection_end_row = selection_start_row;
+            selection_end_col = selection_start_col;
+          }
+          break;
+        }
+        case SDL_MOUSEMOTION: {
+          if (mouse_left_button_down) {
+            std::tie(selection_end_row, selection_end_col) = window_to_console(event.button.x, event.button.y);
+          }
+          break;
+        }
+        case SDL_MOUSEBUTTONUP: {
+          if (event.button.button == SDL_BUTTON(SDL_BUTTON_LEFT)) {
+            mouse_left_button_down = false;
+          }
+          break;
+        }
         case SDL_KEYDOWN:
           if (event.key.type == SDL_KEYDOWN) {
             has_input = true;
@@ -167,7 +193,9 @@ void Screen::loop() {
             if (event.key.keysym.sym == SDL_KeyCode::SDLK_BACKSPACE) {
               // delete key
               input_buffer.push_back('\x7f');
+              clear_selection();
             } else if (SDLInputLiterals.find(c) != SDLInputLiterals.end()) {
+              clear_selection();
               input_buffer.push_back(c);
             } else if (c < 0x100 /*NOTE: if c >=0x100, isprint is UB*/ && std::isprint(c)) {
               auto mod = event.key.keysym.mod;
@@ -187,7 +215,37 @@ void Screen::loop() {
                 } else {
                   input_buffer.push_back(c);
                 }
+              } else if (mod == (KMOD_LCTRL | KMOD_LSHIFT)) {
+                // clipboard
+                if (c == 'c' && has_selection) {
+                  std::stringstream ss;
+                  for (int i = selection_start_row; i <= selection_end_row; i++) {
+                    for (int j = selection_start_col; j <= selection_end_col; j++) {
+                      ss << lines_[i][j].c;
+                    }
+                    ss << std::endl;
+                  }
+                  SDL_SetClipboardText(ss.str().c_str());
+                  clear_selection();
+                } else if (c == 'v') {
+                  auto clipboard_text = SDL_GetClipboardText();
+                  if (clipboard_text) {
+                    if (current_attrs.test(CHAR_ATTR_XTERM_BLOCK_PASTE)) {
+                      write_to_tty("\1b[200~");
+                    }
+                    // UTF8
+                    write_to_tty(clipboard_text);
+                    if (current_attrs.test(CHAR_ATTR_XTERM_BLOCK_PASTE)) {
+                      write_to_tty("\1b[201~");
+                    }
+                  }
+
+                } else {
+                  input_buffer.push_back(c);
+                }
               } else {
+                // pressing any normal key will disable to selection
+                clear_selection();
                 input_buffer.push_back(c);
               }
 //              std::cout << "key '" << c << std::endl;
@@ -206,6 +264,7 @@ void Screen::loop() {
       process_input();
     }
 
+    // draw console
     SDL_SetRenderDrawColor(renderer_, 0,0,0,0xff);
     SDL_RenderClear(renderer_);
 
@@ -215,12 +274,32 @@ void Screen::loop() {
         auto &c = line[j];
         SDL_Rect glyph_box{glyph_width_*j, glyph_height_*i, glyph_width_, glyph_height_};
 
-        if (i == cursor_row && j == cursor_col && cursor_show && cursor_flip) {
-          SDL_SetRenderDrawColor(renderer_, cursor_color.r, cursor_color.g, cursor_color.b, cursor_color.a);
-          auto now = std::chrono::high_resolution_clock::now();
-          if (now - cursor_last_time > blink_interval) {
-            cursor_flip = !cursor_flip;
-            cursor_last_time = now;
+        // draw cursor background
+        if (i == cursor_row && j == cursor_col) {
+          if (!cursor_show) {
+            SDL_SetRenderDrawColor(renderer_, c.bg_color.r, c.bg_color.g, c.bg_color.b, c.bg_color.a);
+          } else {
+            if (cursor_blink) {
+              if (cursor_flip) {
+                SDL_SetRenderDrawColor(renderer_, cursor_color.r, cursor_color.g, cursor_color.b, cursor_color.a);
+              } else {
+                SDL_SetRenderDrawColor(renderer_, c.bg_color.r, c.bg_color.g, c.bg_color.b, c.bg_color.a);
+              }
+              auto now = std::chrono::high_resolution_clock::now();
+              if (now - cursor_last_time > blink_interval) {
+                cursor_flip = !cursor_flip;
+                cursor_last_time = now;
+              }
+            } else {
+              SDL_SetRenderDrawColor(renderer_, cursor_color.r, cursor_color.g, cursor_color.b, cursor_color.a);
+            }
+          }
+        } else if (has_selection) {
+          auto start = std::make_tuple(selection_start_row, selection_start_col), end = std::make_tuple(selection_end_row, selection_end_col);
+          if (in_range(start, end, std::make_tuple(i, j))) {
+            SDL_SetRenderDrawColor(renderer_, selection_bg_color.r, selection_bg_color.g, selection_bg_color.b, selection_bg_color.a);
+          } else {
+            SDL_SetRenderDrawColor(renderer_, c.bg_color.r, c.bg_color.g, c.bg_color.b, c.bg_color.a);
           }
         } else {
           SDL_SetRenderDrawColor(renderer_, c.bg_color.r, c.bg_color.g, c.bg_color.b, c.bg_color.a);
@@ -310,6 +389,8 @@ std::vector<std::function<void()>> CSI_FinalBytes = {
     nullptr,
 };
 
+// ST: String Terminator 0x9c or ESC 0x5c, could also be 0x07 in xterm
+
 TTYInputType TTYInput::receive_char(uint8_t c) {
   last_char_ = '?';
   if (input_state == InputState::Escape) {
@@ -318,13 +399,14 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
       buffer_.clear();
       input_state = InputState::CSI;
       return TTYInputType::Intermediate;
-    } else if (c == ']') {
-      // Operating System Control
-      buffer_.clear();
-      input_state = InputState::OSC;
-      return TTYInputType::Intermediate;
     } else if (c == 0x1b) {
+      // multiple ESC
       input_state = InputState::Escape;
+      return TTYInputType::Intermediate;
+    } else if (c == 'P' || c == ']') {
+      buffer_.clear();
+      buffer_.push_back(c);
+      input_state = InputState::WaitForST;
       return TTYInputType::Intermediate;
     } else {
       last_char_ = c;
@@ -349,14 +431,29 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
     } else {
       return TTYInputType::Intermediate;
     }
-  } else if (input_state == InputState::OSC) {
+  } else if (input_state == InputState::WaitForST) {
     if (c == '\a') {
+      // xterm ST
       input_state = InputState::Idle;
-      return TTYInputType::OSC;
+      return TTYInputType::TerminatedByST;
+    } else if (c == 0x9c) {
+      input_state = InputState::Idle;
+      return TTYInputType::TerminatedByST;
+    } else if (c =='\\') {
+      if (!buffer_.empty() && buffer_.back() == ESC) {
+        // delete the previous ESC
+        input_state = InputState::Idle;
+        buffer_.pop_back();
+        return TTYInputType::TerminatedByST;
+      } else {
+        buffer_.push_back(c);
+        return TTYInputType::Intermediate;
+      }
     } else {
       buffer_.push_back(c);
       return TTYInputType::Intermediate;
     }
+
   } else {
     assert(0);
   }
@@ -619,7 +716,12 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
               return false;
             case 2004:
               // When you are in bracketed paste mode and you paste into your terminal the content will be wrapped by the sequences \e[200~ and  \e[201~.
-              return false;
+              if (enable) {
+                current_attrs.set(CHAR_ATTR_XTERM_BLOCK_PASTE);
+              } else {
+                current_attrs.reset(CHAR_ATTR_XTERM_BLOCK_PASTE);
+              }
+              return true;
           }
         }
       }
@@ -759,6 +861,8 @@ void Screen::process_input() {
     bool verbose = true;
     if (verbose) {
       auto c = input_buffer_[i];
+      log_stream.put(c);
+      log_stream.flush();
       std::cout << "read() at (" << std::dec << cursor_row << "," << cursor_col << "): 0x" <<
                 std::setw(2) << std::setfill('0') << std::hex << (int)(uint8_t)c;
       if (std::isprint(c) && c != '\n') {
@@ -803,18 +907,36 @@ void Screen::process_input() {
         }
       }
     } else if (input_type == TTYInputType::CSI) {
-
-
       auto ok = process_csi(tty_input_.buffer_);
-//      if (!ok) {
+      if (!ok) {
         std::cout << "unknown csi seq ESC [ ";
         for (auto c : tty_input_.buffer_) {
           std::cout << c;
         }
         std::cout << std::endl;
         hexdump(std::cout, tty_input_.buffer_);
+      } else {
+//        std::cout << "csi seq ESC [ ";
+//        for (auto c : tty_input_.buffer_) {
+//          std::cout << c;
+//        }
+//        std::cout << std::endl;
+//        hexdump(std::cout, tty_input_.buffer_);
       }
-//    }
+    } else if (input_type == TTYInputType::TerminatedByST) {
+      const auto &b = tty_input_.buffer_;
+      if (!b.empty()) {
+        if (b[0] == ']') {
+          // OSC: Operating System Control
+          if (b.size() >= 3 && b[1] == '0' && b[2] == ';') {
+            // set title
+            std::string title(reinterpret_cast<const char*>(b.data() + 3), b.size() - 3);
+            SDL_SetWindowTitle(window_, title.c_str());
+          }
+        }
+      }
+
+    }
 
   }
 }
@@ -872,6 +994,13 @@ void Screen::write_to_tty(const std::string &s) {
       offset += nread;
     }
   }
+}
+void Screen::clear_selection() {
+  selection_start_row = 0;
+  selection_start_col = 0;
+  selection_end_row = 0;
+  selection_end_col = 0;
+  has_selection = false;
 }
 
 }

@@ -5,6 +5,7 @@
 #include <iostream>
 #include <mutex>
 #include <bitset>
+#include <fstream>
 
 struct SDL_Window;
 struct SDL_Renderer;
@@ -54,9 +55,9 @@ struct ScreenConfig {
 enum class TTYInputType {
   Char,
   CSI,
-  OSC,
   Unknown,
-  Intermediate
+  Intermediate,
+  TerminatedByST,
 };
 class TTYInput {
  public:
@@ -66,7 +67,7 @@ class TTYInput {
     Idle,
     Escape,
     CSI,
-    OSC,
+    WaitForST,
   };
 
   InputState input_state = InputState::Idle;
@@ -137,6 +138,27 @@ class Screen {
   }
 
   void write_to_tty(const std::string &s);
+
+  void clear_selection();
+
+  // x,  y -> row, col
+  std::tuple<int, int> window_to_console(int x, int y) const {
+    return {y / glyph_height_, x / glyph_width_};
+  }
+
+  bool less_than(std::tuple<int, int> lhs, std::tuple<int, int> rhs) const {
+    int n_lhs = std::get<0>(lhs) * max_cols_ + std::get<1>(lhs);
+    int n_rhs = std::get<0>(rhs) * max_cols_ + std::get<1>(rhs);
+    return n_lhs < n_rhs;
+  }
+
+  // is target in [start, end]
+  bool in_range(std::tuple<int, int> start, std::tuple<int, int> end, std::tuple<int, int> target) const {
+    int n_target = std::get<0>(target) * max_cols_ + std::get<1>(target);
+    int n_start = std::get<0>(start) * max_cols_ + std::get<1>(start);
+    int n_end = std::get<0>(end) * max_cols_ + std::get<1>(end);
+    return (n_start <= n_target && n_target <= n_end) || (n_end <= n_target && n_target <= n_start);
+  }
  private:
   ScreenConfig config_;
 
@@ -155,9 +177,16 @@ class Screen {
   int cursor_flip = 0;
   std::chrono::high_resolution_clock::time_point cursor_last_time;
   Color cursor_color = ColorWhite;
-  bool cursor_blink = false;
+  bool cursor_blink = true;
   bool cursor_show = true;
   std::chrono::milliseconds blink_interval = std::chrono::milliseconds(300);
+
+  // clipboard
+  bool has_selection = false;
+  bool mouse_left_button_down = false;
+  int selection_start_row = 0, selection_start_col = 0;
+  int selection_end_row = 0, selection_end_col = 0;
+  Color selection_bg_color = Color{0xff666666};
 
   int glyph_height_, glyph_width_;
   enum {
@@ -167,15 +196,18 @@ class Screen {
     CHAR_ATTR_UNDERLINE,
     CHAR_ATTR_INVERT,
     CHAR_ATTR_CROSSED_OUT,
+
+    CHAR_ATTR_XTERM_BLOCK_PASTE,
+
+    CHAR_ATTR_COUNT
   };
-  std::bitset<32> current_attrs;
+  std::bitset<CHAR_ATTR_COUNT> current_attrs;
 
   int resolution_w_, resolution_h_;
   int max_rows_;
   int max_cols_;
 
-
-
+  std::ofstream log_stream;
 
   TTYInput tty_input_;
   std::array<char, 1024> input_buffer_;
