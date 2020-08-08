@@ -299,7 +299,9 @@ void Screen::loop() {
     SDL_SetRenderDrawColor(renderer_, 0,0,0,0xff);
     SDL_RenderClear(renderer_);
 
-    render_background_image();
+    if (background_image_texture) {
+      render_background_image();
+    }
 
     for (int i = 0; i < max_rows_; i++) {
       auto &row = get_row(i);
@@ -694,6 +696,16 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
           return true;
         }
       }
+
+    } else if (op == 'L') {
+      // TODO: insert lines
+      // Should consider DCSM and VEM
+//      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1, 1);
+//      if (ints.size() == 1) {
+//        int n = ints[0];
+//        clear_screen(cursor_row, 0, cursor_row + n - 1, max_cols_ - 1);
+//        return true;
+//      }
 
     } else if (op == 'S' || op == 'T') {
       // scroll
