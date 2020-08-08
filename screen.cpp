@@ -136,8 +136,10 @@ char shift_table[] = {
     0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
 };
 
-std::unordered_set<char> SDLInputLiterals = {
-    ' ', '\r', '\t'
+static std::unordered_set<char> SDLInputLiterals = {
+    0x09/* \t */, 0x0d/* Enter */,
+    0x1b /* ESC */,
+    0x20/* SPACE */
 };
 
 void Screen::loop() {
@@ -273,39 +275,35 @@ void Screen::loop() {
       for (int j = 0; j < line.size(); j++) {
         auto &c = line[j];
         SDL_Rect glyph_box{glyph_width_*j, glyph_height_*i, glyph_width_, glyph_height_};
+        Color fg = c.fg_color, bg = c.bg_color;
 
         // draw cursor background
-        if (i == cursor_row && j == cursor_col) {
-          if (!cursor_show) {
-            SDL_SetRenderDrawColor(renderer_, c.bg_color.r, c.bg_color.g, c.bg_color.b, c.bg_color.a);
-          } else {
-            if (cursor_blink) {
-              if (cursor_flip) {
-                SDL_SetRenderDrawColor(renderer_, cursor_color.r, cursor_color.g, cursor_color.b, cursor_color.a);
-              } else {
-                SDL_SetRenderDrawColor(renderer_, c.bg_color.r, c.bg_color.g, c.bg_color.b, c.bg_color.a);
-              }
-              auto now = std::chrono::high_resolution_clock::now();
-              if (now - cursor_last_time > blink_interval) {
-                cursor_flip = !cursor_flip;
-                cursor_last_time = now;
-              }
-            } else {
-              SDL_SetRenderDrawColor(renderer_, cursor_color.r, cursor_color.g, cursor_color.b, cursor_color.a);
+        if (i == cursor_row && j == cursor_col && cursor_show) {
+          if (cursor_blink) {
+            if (cursor_flip) {
+              bg = cursor_color;
+              fg = cursor_fg_color;
             }
+            auto now = std::chrono::high_resolution_clock::now();
+            if (now - cursor_last_time > blink_interval) {
+              cursor_flip = !cursor_flip;
+              cursor_last_time = now;
+            }
+          } else {
+            bg = cursor_color;
+            fg = cursor_fg_color;
           }
         } else if (has_selection) {
           auto start = std::make_tuple(selection_start_row, selection_start_col), end = std::make_tuple(selection_end_row, selection_end_col);
           if (in_range(start, end, std::make_tuple(i, j))) {
-            SDL_SetRenderDrawColor(renderer_, selection_bg_color.r, selection_bg_color.g, selection_bg_color.b, selection_bg_color.a);
-          } else {
-            SDL_SetRenderDrawColor(renderer_, c.bg_color.r, c.bg_color.g, c.bg_color.b, c.bg_color.a);
+            bg = selection_bg_color;
+            fg = selection_fg_color;
           }
-        } else {
-          SDL_SetRenderDrawColor(renderer_, c.bg_color.r, c.bg_color.g, c.bg_color.b, c.bg_color.a);
         }
 
+
         // draw bg color
+        SDL_SetRenderDrawColor(renderer_, bg.r, bg.g, bg.b, bg.a);
         SDL_RenderFillRect(renderer_, &glyph_box);
 
         auto character = c.c;
@@ -314,8 +312,20 @@ void Screen::loop() {
         }
 
         if (character != ' ' && character != 0) {
-//          std::cout << "draw " << c.c << " at " << i << " " << j << std::endl;
-          SDL_Surface* text_surf = TTF_RenderGlyph_Blended(font_, character, to_sdl_color(c.fg_color));
+          uint32_t style = TTF_STYLE_NORMAL;
+          if (c.attr.test(CHAR_ATTR_UNDERLINE)) {
+            style |= TTF_STYLE_UNDERLINE;
+          }
+          if (c.attr.test(CHAR_ATTR_BOLD)) {
+            style |= TTF_STYLE_BOLD;
+          }
+          if (c.attr.test(CHAR_ATTR_ITALIC)) {
+            style |= TTF_STYLE_ITALIC;
+          }
+          if (TTF_GetFontStyle(font_) != style) {
+            TTF_SetFontStyle(font_, style);
+          }
+          SDL_Surface* text_surf = TTF_RenderGlyph_Blended(font_, character, to_sdl_color(fg));
           if (!text_surf) {
             std::cerr << "Failed to TTF_RenderGlyph_Blended" << SDL_GetError() << std::endl;
             abort();
@@ -698,6 +708,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
           switch (code) {
             case 1:
               // Application Cursor Keys (DECCKM), VT100.
+              current_attrs.set(CHAR_ATTR_CURSOR_APPLICATION_MODE);
               return false;
             case 12:
               // Start Blinking Cursor (AT&T 610).
@@ -709,18 +720,14 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
 
             // xterm extensions
             case 1004:
-              // Enable Window Focus Tracking Mode
-              return false;
+              current_attrs.set(CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING, enable);
+              return true;
             case 1049:
               // https://invisible-island.net/xterm/xterm.log.html#xterm_90
               return false;
             case 2004:
               // When you are in bracketed paste mode and you paste into your terminal the content will be wrapped by the sequences \e[200~ and  \e[201~.
-              if (enable) {
-                current_attrs.set(CHAR_ATTR_XTERM_BLOCK_PASTE);
-              } else {
-                current_attrs.reset(CHAR_ATTR_XTERM_BLOCK_PASTE);
-              }
+              current_attrs.set(CHAR_ATTR_XTERM_BLOCK_PASTE, enable);
               return true;
           }
         }
@@ -750,6 +757,9 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
               break;
             case 3: // italic
               current_attrs.set(CHAR_ATTR_ITALIC);
+              break;
+            case 4:
+              current_attrs.set(CHAR_ATTR_UNDERLINE);
               break;
             case 7:
               current_attrs.set(CHAR_ATTR_INVERT);
@@ -863,12 +873,12 @@ void Screen::process_input() {
       auto c = input_buffer_[i];
       log_stream.put(c);
       log_stream.flush();
-      std::cout << "read() at (" << std::dec << cursor_row << "," << cursor_col << "): 0x" <<
-                std::setw(2) << std::setfill('0') << std::hex << (int)(uint8_t)c;
-      if (std::isprint(c) && c != '\n') {
-        std::cout << " '" << c << '\'';
-      }
-      std::cout << std::endl;
+//      std::cout << "read() at (" << std::dec << cursor_row << "," << cursor_col << "): 0x" <<
+//                std::setw(2) << std::setfill('0') << std::hex << (int)(uint8_t)c;
+//      if (std::isprint(c) && c != '\n') {
+//        std::cout << " '" << c << '\'';
+//      }
+//      std::cout << std::endl;
     }
 
     auto input_type = tty_input_.receive_char(input_buffer_[i]);

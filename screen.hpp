@@ -75,6 +75,25 @@ class TTYInput {
   std::vector<std::uint8_t> buffer_;
 };
 
+
+enum {
+  CHAR_ATTR_BOLD = 0,
+  CHAR_ATTR_FAINT,
+  CHAR_ATTR_ITALIC,
+  CHAR_ATTR_UNDERLINE,
+  CHAR_ATTR_INVERT,
+  CHAR_ATTR_CROSSED_OUT,
+
+  // CSI ?0h
+  CHAR_ATTR_CURSOR_APPLICATION_MODE,
+  // CSI ?1049h
+  CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING,
+  // CSI ?2004h
+  CHAR_ATTR_XTERM_BLOCK_PASTE,
+
+  CHAR_ATTR_COUNT
+};
+
 struct Char {
   void reset() {
     *this = Char();
@@ -82,7 +101,8 @@ struct Char {
   char c = 0;
   Color fg_color = ColorWhite;
   Color bg_color = ColorBlack; // TODO
-  bool bold = false;
+
+  std::bitset<CHAR_ATTR_COUNT> attr;
 };
 
 class Screen {
@@ -176,7 +196,7 @@ class Screen {
   // cursor rendering
   int cursor_flip = 0;
   std::chrono::high_resolution_clock::time_point cursor_last_time;
-  Color cursor_color = ColorWhite;
+  Color cursor_color = ColorWhite, cursor_fg_color = ColorBrightBlack;
   bool cursor_blink = true;
   bool cursor_show = true;
   std::chrono::milliseconds blink_interval = std::chrono::milliseconds(300);
@@ -186,21 +206,9 @@ class Screen {
   bool mouse_left_button_down = false;
   int selection_start_row = 0, selection_start_col = 0;
   int selection_end_row = 0, selection_end_col = 0;
-  Color selection_bg_color = Color{0xff666666};
+  Color selection_bg_color = Color{0xff666666}, selection_fg_color = Color{0xff111111};
 
   int glyph_height_, glyph_width_;
-  enum {
-    CHAR_ATTR_BOLD = 0,
-    CHAR_ATTR_FAINT,
-    CHAR_ATTR_ITALIC,
-    CHAR_ATTR_UNDERLINE,
-    CHAR_ATTR_INVERT,
-    CHAR_ATTR_CROSSED_OUT,
-
-    CHAR_ATTR_XTERM_BLOCK_PASTE,
-
-    CHAR_ATTR_COUNT
-  };
   std::bitset<CHAR_ATTR_COUNT> current_attrs;
 
   int resolution_w_, resolution_h_;
