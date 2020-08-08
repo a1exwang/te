@@ -8,6 +8,7 @@
 #include <fstream>
 
 struct SDL_Window;
+struct SDL_Texture;
 struct SDL_Renderer;
 struct _TTF_Font;
 typedef _TTF_Font TTF_Font;
@@ -186,12 +187,28 @@ class Screen {
     int n_end = std::get<0>(end) * max_cols_ + std::get<1>(end);
     return (n_start <= n_target && n_target <= n_end) || (n_end <= n_target && n_target <= n_start);
   }
+
+  void render_background_image();
+
+  Color map_color(Color color) const {
+//    color.r = 0x100 - color.r;
+//    color.g = 0x100 - color.g;
+//    color.b = 0x100 - color.b;
+
+    return color;
+  }
  private:
   ScreenConfig config_;
 
   SDL_Window *window_ = nullptr;
   SDL_Renderer *renderer_ = nullptr;
   TTF_Font *font_ = nullptr;
+
+  // background image
+  SDL_Texture *background_image_texture = nullptr;
+  int background_image_width = 0, background_image_height = 0;
+  // 0 - 255
+  int background_image_opaque = 128;
 
   std::vector<std::vector<Char>> lines_;
   int tty_fd_ = -1;
