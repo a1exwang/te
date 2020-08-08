@@ -54,7 +54,7 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
   resolution_w_ = 1920;
   resolution_h_ = 1080;
 
-  window_ = SDL_CreateWindow( "a1ex's te", 0, 0, resolution_w_, resolution_h_, SDL_WINDOW_SHOWN );
+  window_ = SDL_CreateWindow("a1ex's te", 0, 0, resolution_w_, resolution_h_, SDL_WINDOW_SHOWN);
   if (window_ == nullptr) {
     cerr << "Error creating window: " << SDL_GetError()  << endl;
     abort();
@@ -68,7 +68,7 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
     abort();
   }
 
-  if ( TTF_Init() < 0 ) {
+  if (TTF_Init() < 0) {
     std::cerr << "Error intializing SDL_ttf: " << TTF_GetError() << std::endl;
     abort();
   }
@@ -101,7 +101,7 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
   std::vector<std::string> envs;
   for (int i = 0; envp[i]; i++) {
     if (std::string(envp[i]).starts_with("TERM=")) {
-      envs.emplace_back("TERM=rxvt");
+      envs.emplace_back("TERM=vte");
     } else {
       envs.emplace_back(envp[i]);
     }
@@ -124,16 +124,22 @@ char shift_table[] = {
     // 0
     0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
     0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,'"', 0,0,0,0, '<','_','>','?',
 
     // digit
     ')','!','@','#', '$','%','^','&', '*','(',0,':', 0,'+',0,0,
 
     // 0x40 upper case
     0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-    0,0,0,0, 0,0,0,0, 0,0,0,'{', '|',']',0,0,
+    0,0,0,0, 0,0,0,0, 0,0,0,'{', '|','}',0,0,
+
+    // 0x60 lower case
     '~',0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
     0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+};
+
+Color ANSIStandardColors[] = {
+    0xff000000, 0xff800000, 0xff008000, 0xff808000, 0xff000080, 0xff800080, 0xff008080, 0xffc0c0c0, 0xff808080, 0xffff0000, 0xff00ff00, 0xffffff00, 0xff0000ff, 0xffff00ff, 0xff00ffff, 0xffffffff, 0xff000000, 0xff00005f, 0xff000087, 0xff0000af, 0xff0000d7, 0xff0000ff, 0xff005f00, 0xff005f5f, 0xff005f87, 0xff005faf, 0xff005fd7, 0xff005fff, 0xff008700, 0xff00875f, 0xff008787, 0xff0087af, 0xff0087d7, 0xff0087ff, 0xff00af00, 0xff00af5f, 0xff00af87, 0xff00afaf, 0xff00afd7, 0xff00afff, 0xff00d700, 0xff00d75f, 0xff00d787, 0xff00d7af, 0xff00d7d7, 0xff00d7ff, 0xff00ff00, 0xff00ff5f, 0xff00ff87, 0xff00ffaf, 0xff00ffd7, 0xff00ffff, 0xff5f0000, 0xff5f005f, 0xff5f0087, 0xff5f00af, 0xff5f00d7, 0xff5f00ff, 0xff5f5f00, 0xff5f5f5f, 0xff5f5f87, 0xff5f5faf, 0xff5f5fd7, 0xff5f5fff, 0xff5f8700, 0xff5f875f, 0xff5f8787, 0xff5f87af, 0xff5f87d7, 0xff5f87ff, 0xff5faf00, 0xff5faf5f, 0xff5faf87, 0xff5fafaf, 0xff5fafd7, 0xff5fafff, 0xff5fd700, 0xff5fd75f, 0xff5fd787, 0xff5fd7af, 0xff5fd7d7, 0xff5fd7ff, 0xff5fff00, 0xff5fff5f, 0xff5fff87, 0xff5fffaf, 0xff5fffd7, 0xff5fffff, 0xff870000, 0xff87005f, 0xff870087, 0xff8700af, 0xff8700d7, 0xff8700ff, 0xff875f00, 0xff875f5f, 0xff875f87, 0xff875faf, 0xff875fd7, 0xff875fff, 0xff878700, 0xff87875f, 0xff878787, 0xff8787af, 0xff8787d7, 0xff8787ff, 0xff87af00, 0xff87af5f, 0xff87af87, 0xff87afaf, 0xff87afd7, 0xff87afff, 0xff87d700, 0xff87d75f, 0xff87d787, 0xff87d7af, 0xff87d7d7, 0xff87d7ff, 0xff87ff00, 0xff87ff5f, 0xff87ff87, 0xff87ffaf, 0xff87ffd7, 0xff87ffff, 0xffaf0000, 0xffaf005f, 0xffaf0087, 0xffaf00af, 0xffaf00d7, 0xffaf00ff, 0xffaf5f00, 0xffaf5f5f, 0xffaf5f87, 0xffaf5faf, 0xffaf5fd7, 0xffaf5fff, 0xffaf8700, 0xffaf875f, 0xffaf8787, 0xffaf87af, 0xffaf87d7, 0xffaf87ff, 0xffafaf00, 0xffafaf5f, 0xffafaf87, 0xffafafaf, 0xffafafd7, 0xffafafff, 0xffafd700, 0xffafd75f, 0xffafd787, 0xffafd7af, 0xffafd7d7, 0xffafd7ff, 0xffafff00, 0xffafff5f, 0xffafff87, 0xffafffaf, 0xffafffd7, 0xffafffff, 0xffd70000, 0xffd7005f, 0xffd70087, 0xffd700af, 0xffd700d7, 0xffd700ff, 0xffd75f00, 0xffd75f5f, 0xffd75f87, 0xffd75faf, 0xffd75fd7, 0xffd75fff, 0xffd78700, 0xffd7875f, 0xffd78787, 0xffd787af, 0xffd787d7, 0xffd787ff, 0xffd7af00, 0xffd7af5f, 0xffd7af87, 0xffd7afaf, 0xffd7afd7, 0xffd7afff, 0xffd7d700, 0xffd7d75f, 0xffd7d787, 0xffd7d7af, 0xffd7d7d7, 0xffd7d7ff, 0xffd7ff00, 0xffd7ff5f, 0xffd7ff87, 0xffd7ffaf, 0xffd7ffd7, 0xffd7ffff, 0xffff0000, 0xffff005f, 0xffff0087, 0xffff00af, 0xffff00d7, 0xffff00ff, 0xffff5f00, 0xffff5f5f, 0xffff5f87, 0xffff5faf, 0xffff5fd7, 0xffff5fff, 0xffff8700, 0xffff875f, 0xffff8787, 0xffff87af, 0xffff87d7, 0xffff87ff, 0xffffaf00, 0xffffaf5f, 0xffffaf87, 0xffffafaf, 0xffffafd7, 0xffffafff, 0xffffd700, 0xffffd75f, 0xffffd787, 0xffffd7af, 0xffffd7d7, 0xffffd7ff, 0xffffff00, 0xffffff5f, 0xffffff87, 0xffffffaf, 0xffffffd7, 0xffffffff, 0xff080808, 0xff121212, 0xff1c1c1c, 0xff262626, 0xff303030, 0xff3a3a3a, 0xff444444, 0xff4e4e4e, 0xff585858, 0xff626262, 0xff6c6c6c, 0xff767676, 0xff808080, 0xff8a8a8a, 0xff949494, 0xff9e9e9e, 0xffa8a8a8, 0xffb2b2b2, 0xffbcbcbc, 0xffc6c6c6, 0xffd0d0d0, 0xffdadada, 0xffe4e4e4, 0xffeeeeee
 };
 
 static std::unordered_set<char> SDLInputLiterals = {
@@ -223,7 +229,7 @@ void Screen::loop() {
                   std::stringstream ss;
                   for (int i = selection_start_row; i <= selection_end_row; i++) {
                     for (int j = selection_start_col; j <= selection_end_col; j++) {
-                      ss << lines_[i][j].c;
+                      ss << get_row(i)[j].c;
                     }
                     ss << std::endl;
                   }
@@ -270,10 +276,10 @@ void Screen::loop() {
     SDL_SetRenderDrawColor(renderer_, 0,0,0,0xff);
     SDL_RenderClear(renderer_);
 
-    for (int i = 0; i < lines_.size(); i++) {
-      auto &line = lines_[i];
-      for (int j = 0; j < line.size(); j++) {
-        auto &c = line[j];
+    for (int i = 0; i < max_rows_; i++) {
+      auto &row = get_row(i);
+      for (int j = 0; j < row.size(); j++) {
+        auto &c = row[j];
         SDL_Rect glyph_box{glyph_width_*j, glyph_height_*i, glyph_width_, glyph_height_};
         Color fg = c.fg_color, bg = c.bg_color;
 
@@ -463,17 +469,16 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
       buffer_.push_back(c);
       return TTYInputType::Intermediate;
     }
-
   } else {
     assert(0);
+    return TTYInputType::Unknown;
   }
-
 }
 
 // parse format 123;444;;22
-std::vector<int> parse_csi_colon_ints(const std::vector<uint8_t> &seq, int start, int end) {
+std::vector<int> parse_csi_colon_ints(const std::vector<uint8_t> &seq, int start, int end, int default_value = 0) {
   if (start >= end) {
-    return std::vector<int>(1, 0);
+    return std::vector<int>(1, default_value);
   }
   std::string s;
   std::vector<int> result;
@@ -562,6 +567,17 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
           assert(0);
       }
       return true;
+    } else if (op == 'G') {
+      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
+      if (ints.size() == 1) {
+        if (ints[0] == 0) {
+          cursor_col = 0;
+        } else {
+          cursor_col = ints[0] - 1;
+        }
+        return true;
+      }
+
     } else if (op == 'H') {
       // move cursor to row:col
       auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
@@ -636,7 +652,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
             Ps = 1  ⇒  Erase to Left.
             Ps = 2  ⇒  Erase All.
        */
-      auto ints = parse_csi_colon_ints(seq, 1, seq.size() - 1);
+      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
       if (!ints.empty()) {
         if (ints[0] == 0) {
           clear_screen(cursor_row, cursor_col, cursor_row, max_cols_ - 1);
@@ -649,6 +665,48 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
           return true;
         }
       }
+
+    } else if (op == 'S' || op == 'T') {
+      // scroll
+      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1, 1);
+      if (ints.size() == 1) {
+        int scroll_diff = ((op == 'S') ? -1 : 1) * ints[0];
+        if (current_screen_start_row + scroll_diff < 0) {
+          current_screen_start_row = 0;
+        } else if (current_screen_start_row + scroll_diff + max_rows_ > lines_.size()) {
+          auto new_lines = lines_.size() - (current_screen_start_row + scroll_diff + max_rows_);
+          for (int i = 0; i < new_lines; i++) {
+            lines_.emplace_back(max_cols_);
+          }
+
+          current_screen_start_row += scroll_diff;
+        } else {
+          current_screen_start_row += scroll_diff;
+        }
+        return true;
+      }
+
+    } else if (op == 'X') {
+      // erase n chars from current
+      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1, 1);
+      if (ints.size() == 1) {
+        int row = cursor_row;
+        int col = cursor_col;
+        int count = 0;
+        while (count > 0) {
+          get_row(row)[col].reset();
+          count--;
+          col++;
+          if (col == max_cols_) {
+            row++;
+          }
+          if (row == max_cols_) {
+            break;
+          }
+        }
+        return true;
+      }
+
 
     } else if (op == 'c') {
       if (seq.front() == '>') {
@@ -694,7 +752,25 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
         }
 
 
+      } else {
+        auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
+        if (ints.size() == 1) {
+          // CSI ? 1 ; 2 c
+          write_to_tty("\x1b[?1;2c");
+          return true;
+        }
       }
+    } else if (op == 'd') {
+      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
+      if (ints.size() == 1) {
+        if (ints[0] == 0) {
+          cursor_row = 0;
+        } else {
+          cursor_row = ints[0] - 1;
+        }
+        return true;
+      }
+
     } else if (op == 'h' || op == 'l') {
       if (seq.front() == '?') {
         // h: DEC Private Mode Set (DECSET).
@@ -709,7 +785,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
             case 1:
               // Application Cursor Keys (DECCKM), VT100.
               current_attrs.set(CHAR_ATTR_CURSOR_APPLICATION_MODE);
-              return false;
+              return true;
             case 12:
               // Start Blinking Cursor (AT&T 610).
               cursor_blink = enable;
@@ -739,9 +815,8 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
       } else {
         // set attributes
         auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
-        assert(!ints.empty());
-        bool has_unknown = false;
-        for (auto i : ints) {
+        if (ints.size() == 1) {
+          auto i = ints[0];
           switch (i) {
             case 0:
               //            std::cout << "CSI reset attributes" << std::endl;
@@ -758,20 +833,19 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
             case 3: // italic
               current_attrs.set(CHAR_ATTR_ITALIC);
               break;
-            case 4:
-              current_attrs.set(CHAR_ATTR_UNDERLINE);
+            case 4:current_attrs.set(CHAR_ATTR_UNDERLINE);
               break;
-            case 7:
-              current_attrs.set(CHAR_ATTR_INVERT);
+            case 7:current_attrs.set(CHAR_ATTR_INVERT);
               break;
-            case 9:
-              current_attrs.set(CHAR_ATTR_CROSSED_OUT);
+            case 9:current_attrs.set(CHAR_ATTR_CROSSED_OUT);
               break;
-            case 27:
-              current_attrs.reset(CHAR_ATTR_INVERT);
+            case 27:current_attrs.reset(CHAR_ATTR_INVERT);
               break;
-            case 29:
-              current_attrs.reset(CHAR_ATTR_CROSSED_OUT);
+            case 29:current_attrs.reset(CHAR_ATTR_CROSSED_OUT);
+              break;
+            case 39:current_fg_color = get_default_fg_color();
+              break;
+            case 49:current_bg_color = get_default_bg_color();
               break;
             default:
               if (30 <= i && i < 38) {
@@ -786,11 +860,23 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
                 current_fg_color = pallete[i - 100 + 8];
 
               } else {
-                has_unknown = true;
+                return false;
               }
           }
+          return true;
+        } else if (ints.size() == 3) {
+          // 256 colors
+          if (ints[0] == 38 && ints[1] == 5) {
+            // set foreground color
+            current_fg_color = ANSIStandardColors[ints[2]];
+            return true;
+          } else if (ints[0] == 48 && ints[1] == 5) {
+            current_bg_color = ANSIStandardColors[ints[2]];
+            return true;
+          } else {
+            return false;
+          }
         }
-        return !has_unknown;
 
       }
     } else if (op == 'n') {
@@ -801,7 +887,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
           // Reports the cursor position (CPR) to the application as
           // (as though typed at the keyboard) ESC[n;mR
           std::stringstream ss;
-          ss << ESC << '[' << cursor_row << ';' << cursor_col << 'R';
+          ss << ESC << '[' << (cursor_row+1) << ';' << (cursor_col+1) << 'R';
           auto s = ss.str();
           write_to_tty(s);
           return true;
@@ -908,12 +994,12 @@ void Screen::process_input() {
         }
       } else {
         if (cursor_row < max_rows_ && cursor_col < max_cols_) {
-          lines_[cursor_row][cursor_col].c = c;
-          lines_[cursor_row][cursor_col].bg_color = current_bg_color;
-          lines_[cursor_row][cursor_col].fg_color = current_fg_color;
+          get_row(cursor_row)[cursor_col].c = c;
+          get_row(cursor_row)[cursor_col].bg_color = current_bg_color;
+          get_row(cursor_row)[cursor_col].fg_color = current_fg_color;
           next_cursor();
         } else {
-          std::cerr << "Warning: cursor out of range: " << cursor_row << ":" << cursor_col << std::endl;
+//          std::cerr << "Warning: cursor out of range: " << cursor_row << ":" << cursor_col << std::endl;
         }
       }
     } else if (input_type == TTYInputType::CSI) {

@@ -116,6 +116,7 @@ class Screen {
     for (int i = 0; i < max_rows_; i++) {
       lines_.emplace_back(max_cols_);
     }
+    current_screen_start_row = 0;
     cursor_row = 0;
     cursor_col = 0;
   }
@@ -128,9 +129,10 @@ class Screen {
  private:
   void new_line() {
     if (cursor_row == max_rows_ - 1) {
-      std::vector<std::vector<Char>> tmp(lines_.begin()+1, lines_.end());
-      lines_ = tmp;
+//      std::vector<std::vector<Char>> tmp(lines_.begin()+1, lines_.end());
+//      lines_ = tmp;
       lines_.emplace_back(max_cols_);
+      current_screen_start_row++;
     } else {
       cursor_row++;
     }
@@ -152,9 +154,14 @@ class Screen {
   void clear_screen(int from_row, int from_col, int to_row, int to_col) {
     for (int i = from_row; i <= to_row ; i++) {
       for (int j = from_col; j <= to_col; j++) {
-        lines_[i][j].reset();
+        get_row(i)[j].reset();
       }
     }
+  }
+
+  int current_screen_start_row = 0;
+  std::vector<Char> &get_row(int row) {
+    return lines_[current_screen_start_row + row];
   }
 
   void write_to_tty(const std::string &s);
