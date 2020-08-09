@@ -1,4 +1,4 @@
-#include "screen.hpp"
+#include "include/te/screen.hpp"
 
 int main(int argc, char **argv, char **envp) {
   te::ScreenConfig config;

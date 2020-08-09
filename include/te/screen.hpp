@@ -1,11 +1,13 @@
 #pragma once
 
-#include <vector>
-#include <string>
-#include <iostream>
-#include <mutex>
 #include <bitset>
 #include <fstream>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 struct SDL_Window;
 struct SDL_Texture;
@@ -106,6 +108,18 @@ struct Char {
   std::bitset<CHAR_ATTR_COUNT> attr;
 };
 
+class FontCache {
+ public:
+  FontCache(SDL_Renderer *renderer, TTF_Font *font);
+  SDL_Texture *at(std::tuple<uint32_t, char> pos) const {
+    return fc.at(std::get<0>(pos))[std::get<1>(pos)];
+  }
+ private:
+  std::unordered_map<uint32_t, std::vector<SDL_Texture*>> fc;
+  SDL_Renderer *renderer_;
+  TTF_Font *font_;
+};
+
 class Screen {
  public:
   explicit Screen(ScreenConfig config, char **envp);
@@ -188,6 +202,7 @@ class Screen {
     return (n_start <= n_target && n_target <= n_end) || (n_end <= n_target && n_target <= n_start);
   }
 
+  void render_chars();
   void render_background_image();
 
   Color map_color(Color color) const {
@@ -203,6 +218,8 @@ class Screen {
   SDL_Window *window_ = nullptr;
   SDL_Renderer *renderer_ = nullptr;
   TTF_Font *font_ = nullptr;
+
+  std::unique_ptr<FontCache> font_cache_;
 
   // background image
   SDL_Texture *background_image_texture = nullptr;

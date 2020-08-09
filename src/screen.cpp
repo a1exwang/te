@@ -1,4 +1,4 @@
-#include "screen.hpp"
+#include <te/screen.hpp>
 
 #include <cassert>
 
@@ -23,7 +23,7 @@
 #include <termios.h>
 #include <unistd.h>
 
-#include "child.hpp"
+#include "../child.hpp"
 
 using std::cerr;
 using std::endl;
@@ -42,13 +42,12 @@ void set_tty_window_size(int tty_fd, int cols, int rows, int res_w, int res_h) {
   }
 }
 
-
 Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
 
   log_stream.rdbuf()->pubsetbuf(0, 0);
   log_stream.open("a.log");
 
-  if (SDL_Init( SDL_INIT_EVERYTHING ) != 0) {
+  if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
     std::cerr << "Error initializing SDL: " << SDL_GetError() << std::endl;
     abort();
   }
@@ -57,7 +56,7 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
 
   window_ = SDL_CreateWindow("a1ex's te", 0, 0, resolution_w_, resolution_h_, SDL_WINDOW_SHOWN);
   if (window_ == nullptr) {
-    cerr << "Error creating window: " << SDL_GetError()  << endl;
+    cerr << "Error creating window: " << SDL_GetError() << endl;
     abort();
   }
 
@@ -69,6 +68,7 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
     abort();
   }
 
+  // Start TTF
   if (TTF_Init() < 0) {
     std::cerr << "Error intializing SDL_ttf: " << TTF_GetError() << std::endl;
     abort();
@@ -89,19 +89,31 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
     cerr << "Error TTF_GlyphMetrics " << TTF_GetError() << std::endl;
     abort();
   }
+  glyph_width_ = advance;
+  glyph_height_ = TTF_FontLineSkip(font_);
 
+  max_rows_ = resolution_h_ / glyph_height_;
+  max_cols_ = resolution_w_ / glyph_width_;
+
+  font_cache_ = std::make_unique<FontCache>(renderer_, font_);
+
+  // Start Background Image
   IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
   std::string background_image_path("/home/alexwang/bg.jpg");
   if (std::filesystem::exists(background_image_path)) {
     background_image_texture = IMG_LoadTexture(renderer_, background_image_path.c_str());
-    if(background_image_texture) {
+    if (background_image_texture) {
       int access = 0;
       Uint32 format;
-      if (SDL_QueryTexture(background_image_texture, &format, &access, &background_image_width, &background_image_height) == 0) {
+      if (SDL_QueryTexture(background_image_texture,
+                           &format,
+                           &access,
+                           &background_image_width,
+                           &background_image_height) == 0) {
         // ok
 
       } else {
-        std::cerr << "Failed to query image texture" <<  SDL_GetError() << std::endl;
+        std::cerr << "Failed to query image texture" << SDL_GetError() << std::endl;
       }
     }
   } else {
@@ -111,15 +123,9 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
   // Make sure our image stays in the background using alpha blending
   SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
-  glyph_width_ = advance;
-  glyph_height_ = TTF_FontLineSkip(font_);
-
-  max_rows_ = resolution_h_ / glyph_height_;
-  max_cols_ = resolution_w_ / glyph_width_;
-
   std::string program = "/bin/bash";
-  char *argv[] = {(char*)program.c_str(), nullptr};
-  std::vector<char*> envps;
+  char *argv[] = {(char *) program.c_str(), nullptr};
+  std::vector<char *> envps;
   std::vector<std::string> envs;
   for (int i = 0; envp[i]; i++) {
     if (std::string(envp[i]).starts_with("TERM=")) {
@@ -129,7 +135,7 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
     }
   }
   for (auto &env : envs) {
-    envps.push_back((char*)env.c_str());
+    envps.push_back((char *) env.c_str());
   }
   envps.push_back(nullptr);
   std::tie(child_pid_, tty_fd_) = start_child(program, argv, envps.data());
@@ -138,31 +144,55 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
   reset_tty_buffer();
 }
 
-SDL_Color to_sdl_color(Color color) {
-  return SDL_Color{color.r, color.g, color.b, color.a};
-}
-
 char shift_table[] = {
     // 0
-    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-    0,0,0,0, 0,0,0,'"', 0,0,0,0, '<','_','>','?',
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, '"', 0, 0, 0, 0, '<', '_', '>', '?',
 
     // digit
-    ')','!','@','#', '$','%','^','&', '*','(',0,':', 0,'+',0,0,
+    ')', '!', '@', '#', '$', '%', '^', '&', '*', '(', 0, ':', 0, '+', 0, 0,
 
     // 0x40 upper case
-    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-    0,0,0,0, 0,0,0,0, 0,0,0,'{', '|','}',0,0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '{', '|', '}', 0, 0,
 
     // 0x60 lower case
-    '~',0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    '~', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 };
 
 // 256 colors
 Color ANSIStandardColors[] = {
-    0xff000000, 0xff800000, 0xff008000, 0xff808000, 0xff000080, 0xff800080, 0xff008080, 0xffc0c0c0, 0xff808080, 0xffff0000, 0xff00ff00, 0xffffff00, 0xff0000ff, 0xffff00ff, 0xff00ffff, 0xffffffff, 0xff000000, 0xff00005f, 0xff000087, 0xff0000af, 0xff0000d7, 0xff0000ff, 0xff005f00, 0xff005f5f, 0xff005f87, 0xff005faf, 0xff005fd7, 0xff005fff, 0xff008700, 0xff00875f, 0xff008787, 0xff0087af, 0xff0087d7, 0xff0087ff, 0xff00af00, 0xff00af5f, 0xff00af87, 0xff00afaf, 0xff00afd7, 0xff00afff, 0xff00d700, 0xff00d75f, 0xff00d787, 0xff00d7af, 0xff00d7d7, 0xff00d7ff, 0xff00ff00, 0xff00ff5f, 0xff00ff87, 0xff00ffaf, 0xff00ffd7, 0xff00ffff, 0xff5f0000, 0xff5f005f, 0xff5f0087, 0xff5f00af, 0xff5f00d7, 0xff5f00ff, 0xff5f5f00, 0xff5f5f5f, 0xff5f5f87, 0xff5f5faf, 0xff5f5fd7, 0xff5f5fff, 0xff5f8700, 0xff5f875f, 0xff5f8787, 0xff5f87af, 0xff5f87d7, 0xff5f87ff, 0xff5faf00, 0xff5faf5f, 0xff5faf87, 0xff5fafaf, 0xff5fafd7, 0xff5fafff, 0xff5fd700, 0xff5fd75f, 0xff5fd787, 0xff5fd7af, 0xff5fd7d7, 0xff5fd7ff, 0xff5fff00, 0xff5fff5f, 0xff5fff87, 0xff5fffaf, 0xff5fffd7, 0xff5fffff, 0xff870000, 0xff87005f, 0xff870087, 0xff8700af, 0xff8700d7, 0xff8700ff, 0xff875f00, 0xff875f5f, 0xff875f87, 0xff875faf, 0xff875fd7, 0xff875fff, 0xff878700, 0xff87875f, 0xff878787, 0xff8787af, 0xff8787d7, 0xff8787ff, 0xff87af00, 0xff87af5f, 0xff87af87, 0xff87afaf, 0xff87afd7, 0xff87afff, 0xff87d700, 0xff87d75f, 0xff87d787, 0xff87d7af, 0xff87d7d7, 0xff87d7ff, 0xff87ff00, 0xff87ff5f, 0xff87ff87, 0xff87ffaf, 0xff87ffd7, 0xff87ffff, 0xffaf0000, 0xffaf005f, 0xffaf0087, 0xffaf00af, 0xffaf00d7, 0xffaf00ff, 0xffaf5f00, 0xffaf5f5f, 0xffaf5f87, 0xffaf5faf, 0xffaf5fd7, 0xffaf5fff, 0xffaf8700, 0xffaf875f, 0xffaf8787, 0xffaf87af, 0xffaf87d7, 0xffaf87ff, 0xffafaf00, 0xffafaf5f, 0xffafaf87, 0xffafafaf, 0xffafafd7, 0xffafafff, 0xffafd700, 0xffafd75f, 0xffafd787, 0xffafd7af, 0xffafd7d7, 0xffafd7ff, 0xffafff00, 0xffafff5f, 0xffafff87, 0xffafffaf, 0xffafffd7, 0xffafffff, 0xffd70000, 0xffd7005f, 0xffd70087, 0xffd700af, 0xffd700d7, 0xffd700ff, 0xffd75f00, 0xffd75f5f, 0xffd75f87, 0xffd75faf, 0xffd75fd7, 0xffd75fff, 0xffd78700, 0xffd7875f, 0xffd78787, 0xffd787af, 0xffd787d7, 0xffd787ff, 0xffd7af00, 0xffd7af5f, 0xffd7af87, 0xffd7afaf, 0xffd7afd7, 0xffd7afff, 0xffd7d700, 0xffd7d75f, 0xffd7d787, 0xffd7d7af, 0xffd7d7d7, 0xffd7d7ff, 0xffd7ff00, 0xffd7ff5f, 0xffd7ff87, 0xffd7ffaf, 0xffd7ffd7, 0xffd7ffff, 0xffff0000, 0xffff005f, 0xffff0087, 0xffff00af, 0xffff00d7, 0xffff00ff, 0xffff5f00, 0xffff5f5f, 0xffff5f87, 0xffff5faf, 0xffff5fd7, 0xffff5fff, 0xffff8700, 0xffff875f, 0xffff8787, 0xffff87af, 0xffff87d7, 0xffff87ff, 0xffffaf00, 0xffffaf5f, 0xffffaf87, 0xffffafaf, 0xffffafd7, 0xffffafff, 0xffffd700, 0xffffd75f, 0xffffd787, 0xffffd7af, 0xffffd7d7, 0xffffd7ff, 0xffffff00, 0xffffff5f, 0xffffff87, 0xffffffaf, 0xffffffd7, 0xffffffff, 0xff080808, 0xff121212, 0xff1c1c1c, 0xff262626, 0xff303030, 0xff3a3a3a, 0xff444444, 0xff4e4e4e, 0xff585858, 0xff626262, 0xff6c6c6c, 0xff767676, 0xff808080, 0xff8a8a8a, 0xff949494, 0xff9e9e9e, 0xffa8a8a8, 0xffb2b2b2, 0xffbcbcbc, 0xffc6c6c6, 0xffd0d0d0, 0xffdadada, 0xffe4e4e4, 0xffeeeeee
+    0xff000000, 0xff800000, 0xff008000, 0xff808000, 0xff000080, 0xff800080, 0xff008080, 0xffc0c0c0, 0xff808080,
+    0xffff0000, 0xff00ff00, 0xffffff00, 0xff0000ff, 0xffff00ff, 0xff00ffff, 0xffffffff, 0xff000000, 0xff00005f,
+    0xff000087, 0xff0000af, 0xff0000d7, 0xff0000ff, 0xff005f00, 0xff005f5f, 0xff005f87, 0xff005faf, 0xff005fd7,
+    0xff005fff, 0xff008700, 0xff00875f, 0xff008787, 0xff0087af, 0xff0087d7, 0xff0087ff, 0xff00af00, 0xff00af5f,
+    0xff00af87, 0xff00afaf, 0xff00afd7, 0xff00afff, 0xff00d700, 0xff00d75f, 0xff00d787, 0xff00d7af, 0xff00d7d7,
+    0xff00d7ff, 0xff00ff00, 0xff00ff5f, 0xff00ff87, 0xff00ffaf, 0xff00ffd7, 0xff00ffff, 0xff5f0000, 0xff5f005f,
+    0xff5f0087, 0xff5f00af, 0xff5f00d7, 0xff5f00ff, 0xff5f5f00, 0xff5f5f5f, 0xff5f5f87, 0xff5f5faf, 0xff5f5fd7,
+    0xff5f5fff, 0xff5f8700, 0xff5f875f, 0xff5f8787, 0xff5f87af, 0xff5f87d7, 0xff5f87ff, 0xff5faf00, 0xff5faf5f,
+    0xff5faf87, 0xff5fafaf, 0xff5fafd7, 0xff5fafff, 0xff5fd700, 0xff5fd75f, 0xff5fd787, 0xff5fd7af, 0xff5fd7d7,
+    0xff5fd7ff, 0xff5fff00, 0xff5fff5f, 0xff5fff87, 0xff5fffaf, 0xff5fffd7, 0xff5fffff, 0xff870000, 0xff87005f,
+    0xff870087, 0xff8700af, 0xff8700d7, 0xff8700ff, 0xff875f00, 0xff875f5f, 0xff875f87, 0xff875faf, 0xff875fd7,
+    0xff875fff, 0xff878700, 0xff87875f, 0xff878787, 0xff8787af, 0xff8787d7, 0xff8787ff, 0xff87af00, 0xff87af5f,
+    0xff87af87, 0xff87afaf, 0xff87afd7, 0xff87afff, 0xff87d700, 0xff87d75f, 0xff87d787, 0xff87d7af, 0xff87d7d7,
+    0xff87d7ff, 0xff87ff00, 0xff87ff5f, 0xff87ff87, 0xff87ffaf, 0xff87ffd7, 0xff87ffff, 0xffaf0000, 0xffaf005f,
+    0xffaf0087, 0xffaf00af, 0xffaf00d7, 0xffaf00ff, 0xffaf5f00, 0xffaf5f5f, 0xffaf5f87, 0xffaf5faf, 0xffaf5fd7,
+    0xffaf5fff, 0xffaf8700, 0xffaf875f, 0xffaf8787, 0xffaf87af, 0xffaf87d7, 0xffaf87ff, 0xffafaf00, 0xffafaf5f,
+    0xffafaf87, 0xffafafaf, 0xffafafd7, 0xffafafff, 0xffafd700, 0xffafd75f, 0xffafd787, 0xffafd7af, 0xffafd7d7,
+    0xffafd7ff, 0xffafff00, 0xffafff5f, 0xffafff87, 0xffafffaf, 0xffafffd7, 0xffafffff, 0xffd70000, 0xffd7005f,
+    0xffd70087, 0xffd700af, 0xffd700d7, 0xffd700ff, 0xffd75f00, 0xffd75f5f, 0xffd75f87, 0xffd75faf, 0xffd75fd7,
+    0xffd75fff, 0xffd78700, 0xffd7875f, 0xffd78787, 0xffd787af, 0xffd787d7, 0xffd787ff, 0xffd7af00, 0xffd7af5f,
+    0xffd7af87, 0xffd7afaf, 0xffd7afd7, 0xffd7afff, 0xffd7d700, 0xffd7d75f, 0xffd7d787, 0xffd7d7af, 0xffd7d7d7,
+    0xffd7d7ff, 0xffd7ff00, 0xffd7ff5f, 0xffd7ff87, 0xffd7ffaf, 0xffd7ffd7, 0xffd7ffff, 0xffff0000, 0xffff005f,
+    0xffff0087, 0xffff00af, 0xffff00d7, 0xffff00ff, 0xffff5f00, 0xffff5f5f, 0xffff5f87, 0xffff5faf, 0xffff5fd7,
+    0xffff5fff, 0xffff8700, 0xffff875f, 0xffff8787, 0xffff87af, 0xffff87d7, 0xffff87ff, 0xffffaf00, 0xffffaf5f,
+    0xffffaf87, 0xffffafaf, 0xffffafd7, 0xffffafff, 0xffffd700, 0xffffd75f, 0xffffd787, 0xffffd7af, 0xffffd7d7,
+    0xffffd7ff, 0xffffff00, 0xffffff5f, 0xffffff87, 0xffffffaf, 0xffffffd7, 0xffffffff, 0xff080808, 0xff121212,
+    0xff1c1c1c, 0xff262626, 0xff303030, 0xff3a3a3a, 0xff444444, 0xff4e4e4e, 0xff585858, 0xff626262, 0xff6c6c6c,
+    0xff767676, 0xff808080, 0xff8a8a8a, 0xff949494, 0xff9e9e9e, 0xffa8a8a8, 0xffb2b2b2, 0xffbcbcbc, 0xffc6c6c6,
+    0xffd0d0d0, 0xffdadada, 0xffe4e4e4, 0xffeeeeee
 };
 
 static std::unordered_set<char> SDLInputLiterals = {
@@ -187,107 +217,108 @@ void Screen::loop() {
         case SDL_QUIT: {
           loop_continue = false;
           break;
-        case SDL_WINDOWEVENT: {
-          if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
-            int new_width = event.window.data1;
-            int new_height = event.window.data2;
-            resize(new_width, new_height);
+          case SDL_WINDOWEVENT: {
+            if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
+              int new_width = event.window.data1;
+              int new_height = event.window.data2;
+              resize(new_width, new_height);
+            }
+            break;
           }
-          break;
-        }
-        case SDL_MOUSEBUTTONDOWN: {
-          if (event.button.button == SDL_BUTTON(SDL_BUTTON_LEFT)) {
-            has_selection = true;
-            mouse_left_button_down = true;
-            std::tie(selection_start_row, selection_start_col) = window_to_console(event.button.x, event.button.y);
-            selection_end_row = selection_start_row;
-            selection_end_col = selection_start_col;
+          case SDL_MOUSEBUTTONDOWN: {
+            if (event.button.button == SDL_BUTTON(SDL_BUTTON_LEFT)) {
+              has_selection = true;
+              mouse_left_button_down = true;
+              std::tie(selection_start_row, selection_start_col) = window_to_console(event.button.x, event.button.y);
+              selection_end_row = selection_start_row;
+              selection_end_col = selection_start_col;
+            }
+            break;
           }
-          break;
-        }
-        case SDL_MOUSEMOTION: {
-          if (mouse_left_button_down) {
-            std::tie(selection_end_row, selection_end_col) = window_to_console(event.button.x, event.button.y);
+          case SDL_MOUSEMOTION: {
+            if (mouse_left_button_down) {
+              std::tie(selection_end_row, selection_end_col) = window_to_console(event.button.x, event.button.y);
+            }
+            break;
           }
-          break;
-        }
-        case SDL_MOUSEBUTTONUP: {
-          if (event.button.button == SDL_BUTTON(SDL_BUTTON_LEFT)) {
-            mouse_left_button_down = false;
+          case SDL_MOUSEBUTTONUP: {
+            if (event.button.button == SDL_BUTTON(SDL_BUTTON_LEFT)) {
+              mouse_left_button_down = false;
+            }
+            break;
           }
-          break;
-        }
-        case SDL_KEYDOWN:
-          if (event.key.type == SDL_KEYDOWN) {
-            has_input = true;
-            auto c = event.key.keysym.sym;
-            if (event.key.keysym.sym == SDL_KeyCode::SDLK_BACKSPACE) {
-              // delete key
-              input_buffer.push_back('\x7f');
-              clear_selection();
-            } else if (SDLInputLiterals.find(c) != SDLInputLiterals.end()) {
-              clear_selection();
-              input_buffer.push_back(c);
-            } else if (c < 0x100 /*NOTE: if c >=0x100, isprint is UB*/ && std::isprint(c)) {
-              auto mod = event.key.keysym.mod;
-              if (mod == KMOD_LSHIFT || mod == KMOD_RSHIFT) {
-                if (std::isalpha(c)) {
-                  input_buffer.push_back(std::toupper(c));
-                } else if (c < 0x80 && shift_table[c] != 0) {
-                  input_buffer.push_back(shift_table[c]);
-                } else {
-                  input_buffer.push_back(c);
-                }
-              } else if (mod == KMOD_LCTRL || mod == KMOD_RCTRL) {
-                if (std::isalpha(c)) {
-                  input_buffer.push_back(c - 'a' + 1);
-                } else if (0x5b <= c && c < 0x60) {
-                  input_buffer.push_back(c - 0x40);
-                } else {
-                  input_buffer.push_back(c);
-                }
-              } else if (mod == (KMOD_LCTRL | KMOD_LSHIFT)) {
-                // clipboard
-                if (c == 'c' && has_selection) {
-                  std::stringstream ss;
-                  for (int i = selection_start_row; i <= selection_end_row; i++) {
-                    for (int j = selection_start_col; j <= selection_end_col; j++) {
-                      ss << get_row(i)[j].c;
-                    }
-                    ss << std::endl;
-                  }
-                  SDL_SetClipboardText(ss.str().c_str());
-                  clear_selection();
-                } else if (c == 'v') {
-                  auto clipboard_text = SDL_GetClipboardText();
-                  if (clipboard_text) {
-                    if (current_attrs.test(CHAR_ATTR_XTERM_BLOCK_PASTE)) {
-                      write_to_tty("\1b[200~");
-                    }
-                    // UTF8
-                    write_to_tty(clipboard_text);
-                    if (current_attrs.test(CHAR_ATTR_XTERM_BLOCK_PASTE)) {
-                      write_to_tty("\1b[201~");
-                    }
-                  }
-
-                } else {
-                  input_buffer.push_back(c);
-                }
-              } else {
-                // pressing any normal key will disable to selection
+          case SDL_KEYDOWN:
+            if (event.key.type == SDL_KEYDOWN) {
+              has_input = true;
+              auto c = event.key.keysym.sym;
+              if (event.key.keysym.sym == SDL_KeyCode::SDLK_BACKSPACE) {
+                // delete key
+                input_buffer.push_back('\x7f');
+                clear_selection();
+              } else if (SDLInputLiterals.find(c) != SDLInputLiterals.end()) {
                 clear_selection();
                 input_buffer.push_back(c);
-              }
+              } else if (c < 0x100 /*NOTE: if c >=0x100, isprint is UB*/ && std::isprint(c)) {
+                auto mod = event.key.keysym.mod;
+                if (mod == KMOD_LSHIFT || mod == KMOD_RSHIFT) {
+                  if (std::isalpha(c)) {
+                    input_buffer.push_back(std::toupper(c));
+                  } else if (c < 0x80 && shift_table[c] != 0) {
+                    input_buffer.push_back(shift_table[c]);
+                  } else {
+                    input_buffer.push_back(c);
+                  }
+                } else if (mod == KMOD_LCTRL || mod == KMOD_RCTRL) {
+                  if (std::isalpha(c)) {
+                    input_buffer.push_back(c - 'a' + 1);
+                  } else if (0x5b <= c && c < 0x60) {
+                    input_buffer.push_back(c - 0x40);
+                  } else {
+                    input_buffer.push_back(c);
+                  }
+                } else if (mod == (KMOD_LCTRL | KMOD_LSHIFT)) {
+                  // clipboard
+                  if (c == 'c' && has_selection) {
+                    std::stringstream ss;
+                    for (int i = selection_start_row; i <= selection_end_row; i++) {
+                      for (int j = selection_start_col; j <= selection_end_col; j++) {
+                        ss << get_row(i)[j].c;
+                      }
+                      ss << std::endl;
+                    }
+                    SDL_SetClipboardText(ss.str().c_str());
+                    clear_selection();
+                  } else if (c == 'v') {
+                    auto clipboard_text = SDL_GetClipboardText();
+                    if (clipboard_text) {
+                      if (current_attrs.test(CHAR_ATTR_XTERM_BLOCK_PASTE)) {
+                        write_to_tty("\1b[200~");
+                      }
+                      // UTF8
+                      write_to_tty(clipboard_text);
+                      if (current_attrs.test(CHAR_ATTR_XTERM_BLOCK_PASTE)) {
+                        write_to_tty("\1b[201~");
+                      }
+                    }
+
+                  } else {
+                    input_buffer.push_back(c);
+                  }
+                } else {
+                  // pressing any normal key will disable to selection
+                  clear_selection();
+                  input_buffer.push_back(c);
+                }
 //              std::cout << "key '" << c << std::endl;
-            } else {
+              } else {
 //              cerr << "unknown key " << c << std::endl;
+              }
             }
-          }
           break;
         }
       }
     }
+    auto t_input1 = std::chrono::high_resolution_clock::now();
 
     if (child_pid_) {
       loop_continue = check_child_process();
@@ -295,90 +326,32 @@ void Screen::loop() {
       process_input();
     }
 
+    auto t_shell = std::chrono::high_resolution_clock::now();
+
     // draw console
-    SDL_SetRenderDrawColor(renderer_, 0,0,0,0xff);
+    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 0xff);
     SDL_RenderClear(renderer_);
 
     if (background_image_texture) {
       render_background_image();
     }
 
-    for (int i = 0; i < max_rows_; i++) {
-      auto &row = get_row(i);
-      for (int j = 0; j < row.size(); j++) {
-        auto &c = row[j];
-        SDL_Rect glyph_box{glyph_width_*j, glyph_height_*i, glyph_width_, glyph_height_};
-        Color fg = c.fg_color, bg = c.bg_color;
+    auto t_bg = std::chrono::high_resolution_clock::now();
 
-        // draw cursor background
-        if (i == cursor_row && j == cursor_col && cursor_show) {
-          if (cursor_blink) {
-            if (cursor_flip) {
-              bg = cursor_color;
-              fg = cursor_fg_color;
-            }
-            auto now = std::chrono::high_resolution_clock::now();
-            if (now - cursor_last_time > blink_interval) {
-              cursor_flip = !cursor_flip;
-              cursor_last_time = now;
-            }
-          } else {
-            bg = cursor_color;
-            fg = cursor_fg_color;
-          }
-        } else if (has_selection) {
-          auto start = std::make_tuple(selection_start_row, selection_start_col), end = std::make_tuple(selection_end_row, selection_end_col);
-          if (in_range(start, end, std::make_tuple(i, j))) {
-            bg = selection_bg_color;
-            fg = selection_fg_color;
-          }
-        }
+    render_chars();
 
-        fg = map_color(fg);
-        bg = map_color(bg);
-
-        // draw bg color
-        SDL_SetRenderDrawColor(renderer_, bg.r, bg.g, bg.b, background_image_opaque);
-        SDL_RenderFillRect(renderer_, &glyph_box);
-
-        auto character = c.c;
-        if (!std::isprint(c.c) && character != 0) {
-          character = '?';
-        }
-
-        if (character != ' ' && character != 0) {
-          uint32_t style = TTF_STYLE_NORMAL;
-          if (c.attr.test(CHAR_ATTR_UNDERLINE)) {
-            style |= TTF_STYLE_UNDERLINE;
-          }
-          if (c.attr.test(CHAR_ATTR_BOLD)) {
-            style |= TTF_STYLE_BOLD;
-          }
-          if (c.attr.test(CHAR_ATTR_ITALIC)) {
-            style |= TTF_STYLE_ITALIC;
-          }
-          if (TTF_GetFontStyle(font_) != style) {
-            TTF_SetFontStyle(font_, style);
-          }
-          SDL_Surface* text_surf = TTF_RenderGlyph_Blended(font_, character, to_sdl_color(fg));
-          if (!text_surf) {
-            std::cerr << "Failed to TTF_RenderGlyph_Blended" << SDL_GetError() << std::endl;
-            abort();
-          }
-          auto text = SDL_CreateTextureFromSurface(renderer_, text_surf);
-
-          SDL_RenderCopy(renderer_, text, NULL, &glyph_box);
-          SDL_DestroyTexture(text);
-          SDL_FreeSurface(text_surf);
-        }
-      }
-    }
+    auto t_chars = std::chrono::high_resolution_clock::now();
 
     // Update window
     SDL_RenderPresent(renderer_);
     auto now = std::chrono::high_resolution_clock::now();
     if (has_input) {
-      std::cout << "Input latency " << std::chrono::duration<float, std::milli>(now - t0).count() << "ms" << std::endl;
+      std::cerr << "Input latency "
+                << "input " << std::chrono::duration<float, std::milli>(t_input1 - t0).count() << "ms" << std::endl
+                << "shell " << std::chrono::duration<float, std::milli>(t_shell - t0).count() << "ms" << std::endl
+                << "bg " << std::chrono::duration<float, std::milli>(t_bg - t0).count() << "ms" << std::endl
+                << "chars " << std::chrono::duration<float, std::milli>(t_chars - t0).count() << "ms" << std::endl
+                << "total " << std::chrono::duration<float, std::milli>(now - t0).count() << "ms" << std::endl;
     }
 
     last_t = now;
@@ -392,7 +365,6 @@ Screen::~Screen() {
   if (window_) {
     SDL_DestroyWindow(window_);
   }
-
 
   IMG_Quit();
   TTF_Quit();
@@ -486,7 +458,7 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
     } else if (c == 0x9c) {
       input_state = InputState::Idle;
       return TTYInputType::TerminatedByST;
-    } else if (c =='\\') {
+    } else if (c == '\\') {
       if (!buffer_.empty() && buffer_.back() == ESC) {
         // delete the previous ESC
         input_state = InputState::Idle;
@@ -564,7 +536,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
       }
 
       int n = ints[0];
-      switch(op) {
+      switch (op) {
         // TODO: report out of range
         case 'A':
           // up
@@ -573,15 +545,13 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
             cursor_row = 0;
           }
           break;
-        case 'B':
-          cursor_row += n;
+        case 'B':cursor_row += n;
           if (cursor_row > max_rows_ - 1) {
             cursor_row = max_rows_ - 1;
           }
           // down
           break;
-        case 'C':
-          cursor_col += n;
+        case 'C':cursor_col += n;
           if (cursor_col > max_cols_ - 1) {
             cursor_col = max_cols_ - 1;
           }
@@ -594,8 +564,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
             cursor_col = 0;
           }
           break;
-        default:
-          assert(0);
+        default:assert(0);
       }
       return true;
     } else if (op == 'G') {
@@ -691,7 +660,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
         } else if (ints[0] == 1) {
           clear_screen(cursor_row, 0, cursor_row, cursor_col);
           return true;
-        } else if (ints[0] == 2){
+        } else if (ints[0] == 2) {
           clear_screen(cursor_row, 0, cursor_row, max_cols_ - 1);
           return true;
         }
@@ -748,7 +717,6 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
         return true;
       }
 
-
     } else if (op == 'c') {
       if (seq.front() == '>') {
         /**
@@ -792,7 +760,6 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
           }
         }
 
-
       } else {
         auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
         if (ints.size() == 1) {
@@ -831,13 +798,11 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
               // Start Blinking Cursor (AT&T 610).
               cursor_blink = enable;
               return true;
-            case 25:
-              cursor_show = enable;
+            case 25:cursor_show = enable;
               return true;
 
-            // xterm extensions
-            case 1004:
-              current_attrs.set(CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING, enable);
+              // xterm extensions
+            case 1004:current_attrs.set(CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING, enable);
               return true;
             case 1049:
               // https://invisible-island.net/xterm/xterm.log.html#xterm_90
@@ -928,7 +893,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
           // Reports the cursor position (CPR) to the application as
           // (as though typed at the keyboard) ESC[n;mR
           std::stringstream ss;
-          ss << ESC << '[' << (cursor_row+1) << ';' << (cursor_col+1) << 'R';
+          ss << ESC << '[' << (cursor_row + 1) << ';' << (cursor_col + 1) << 'R';
           auto s = ss.str();
           write_to_tty(s);
           return true;
@@ -963,7 +928,7 @@ void hexdump(std::ostream &os, std::span<const uint8_t> data) {
   int addr_width = ceil(log2(data.size()) / 4);
   os << "0x" << std::hex << std::setw(addr_width) << std::setfill('0') << 0 << " ";
   for (size_t i = 0; i < data.size(); i++) {
-    ss_hex << std::hex << std::setw(2) << std::setfill('0') << (int)data[i] << ' ';
+    ss_hex << std::hex << std::setw(2) << std::setfill('0') << (int) data[i] << ' ';
     if (std::isprint(data[i])) {
       ss_s << data[i];
     } else {
@@ -973,8 +938,10 @@ void hexdump(std::ostream &os, std::span<const uint8_t> data) {
     if (i % width == width - 1) {
       os << ss_hex.str() << " | " << ss_s.str() << std::endl;
       os << "0x" << std::hex << std::setw(addr_width) << std::setfill('0') << i << " ";
-      ss_hex.str(""); ss_hex.clear();
-      ss_s.str(""); ss_s.clear();
+      ss_hex.str("");
+      ss_hex.clear();
+      ss_s.str("");
+      ss_s.clear();
     }
   }
 
@@ -1067,7 +1034,7 @@ void Screen::process_input() {
           // OSC: Operating System Control
           if (b.size() >= 3 && b[1] == '0' && b[2] == ';') {
             // set title
-            std::string title(reinterpret_cast<const char*>(b.data() + 3), b.size() - 3);
+            std::string title(reinterpret_cast<const char *>(b.data() + 3), b.size() - 3);
             SDL_SetWindowTitle(window_, title.c_str());
           }
         }
@@ -1141,8 +1108,8 @@ void Screen::clear_selection() {
 }
 void Screen::render_background_image() {
   // default tiling mode
-  int cols = ceil((double)resolution_w_ / background_image_width),
-      rows = ceil((double)resolution_h_ / background_image_height);
+  int cols = ceil((double) resolution_w_ / background_image_width),
+      rows = ceil((double) resolution_h_ / background_image_height);
 
   int pad_w = 0, pad_h = 0;
   // if we have enough space for one complete image, add padding
@@ -1152,11 +1119,55 @@ void Screen::render_background_image() {
   }
   for (int row = -1; row < rows; row++) {
     for (int col = -1; col < cols; col++) {
-      SDL_Rect dst{background_image_width*col+pad_w, background_image_height*row+pad_h, background_image_width, background_image_height};
+      SDL_Rect dst{
+          background_image_width * col + pad_w, background_image_height * row + pad_h, background_image_width,
+          background_image_height
+      };
       SDL_Rect src{0, 0, background_image_width, background_image_height};
       SDL_RenderCopy(renderer_, background_image_texture, &src, &dst);
     }
   }
 }
 
+FontCache::FontCache(SDL_Renderer *renderer, TTF_Font *font) :renderer_(renderer), font_(font) {
+
+  std::vector<uint32_t> styles = {
+      TTF_STYLE_NORMAL,
+
+      TTF_STYLE_UNDERLINE,
+      TTF_STYLE_BOLD,
+      TTF_STYLE_ITALIC,
+
+      TTF_STYLE_UNDERLINE | TTF_STYLE_BOLD,
+      TTF_STYLE_UNDERLINE | TTF_STYLE_ITALIC,
+      TTF_STYLE_BOLD | TTF_STYLE_ITALIC,
+
+      TTF_STYLE_UNDERLINE | TTF_STYLE_BOLD | TTF_STYLE_ITALIC,
+  };
+
+  for (auto style : styles) {
+    auto [it, ok] = fc.insert({style, {128, nullptr}});
+    assert(ok);
+
+    TTF_SetFontStyle(font_, style);
+    for (int i = 0; i < 128; i++) {
+      if (std::isprint(i)) {
+        SDL_Color white_color{0xff,0xff,0xff,0xff};
+        SDL_Surface *text_surf = TTF_RenderGlyph_Blended(font_, i, white_color);
+        if (!text_surf) {
+          std::cerr << "Failed to TTF_RenderGlyph_Blended" << SDL_GetError() << std::endl;
+          abort();
+        }
+
+        auto text = SDL_CreateTextureFromSurface(renderer_, text_surf);
+        if (!text) {
+          std::cerr << "Failed to SDL_CreateTextureFromSurface when creating fonts:" << SDL_GetError() << std::endl;
+          abort();
+        }
+
+        it->second[i] = text;
+      }
+    }
+  }
+}
 }
