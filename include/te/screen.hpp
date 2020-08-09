@@ -87,8 +87,14 @@ enum {
   CHAR_ATTR_INVERT,
   CHAR_ATTR_CROSSED_OUT,
 
+
   // CSI ?0h
   CHAR_ATTR_CURSOR_APPLICATION_MODE,
+  // CSI ?5h
+  CHAR_ATTR_REVERSE_VIDEO,
+  // CSI ?7h
+  CHAR_ATTR_AUTO_WRAP_MODE,
+
   // CSI ?1049h
   CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING,
   // CSI ?2004h
@@ -141,6 +147,10 @@ class Screen {
   bool check_child_process();
   void write_pending_input_data(std::vector<uint8_t> &input_buffer);
   void resize(int w, int h);
+  void normal_mode() {
+    current_attrs.reset();
+    current_attrs.set(CHAR_ATTR_AUTO_WRAP_MODE);
+  }
  private:
   void new_line() {
     if (cursor_row == max_rows_ - 1) {
@@ -152,10 +162,13 @@ class Screen {
       cursor_row++;
     }
   }
-  void next_cursor() {
-    if (cursor_col < max_cols_) {
-      cursor_col++;
-    }
+  void carriage_return() {
+    cursor_col = 0;
+  }
+  void fill_current_cursor(char c) {
+    get_row(cursor_row)[cursor_col].c = c;
+    get_row(cursor_row)[cursor_col].bg_color = current_bg_color;
+    get_row(cursor_row)[cursor_col].fg_color = current_fg_color;
   }
 
   Color get_default_fg_color() const {
@@ -206,9 +219,11 @@ class Screen {
   void render_background_image();
 
   Color map_color(Color color) const {
-//    color.r = 0x100 - color.r;
-//    color.g = 0x100 - color.g;
-//    color.b = 0x100 - color.b;
+    if (current_attrs.test(CHAR_ATTR_REVERSE_VIDEO)) {
+      color.r = 0x100 - color.r;
+      color.g = 0x100 - color.g;
+      color.b = 0x100 - color.b;
+    }
 
     return color;
   }
@@ -226,6 +241,9 @@ class Screen {
   int background_image_width = 0, background_image_height = 0;
   // 0 - 255
   int background_image_opaque = 128;
+
+  std::string window_title_ = "alex's te";
+  std::vector<std::string> xterm_title_stack_;
 
   std::vector<std::vector<Char>> lines_;
   int tty_fd_ = -1;

@@ -54,7 +54,7 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
   resolution_w_ = 1920;
   resolution_h_ = 1080;
 
-  window_ = SDL_CreateWindow("a1ex's te", 0, 0, resolution_w_, resolution_h_, SDL_WINDOW_SHOWN);
+  window_ = SDL_CreateWindow(window_title_.c_str(), 0, 0, resolution_w_, resolution_h_, SDL_WINDOW_SHOWN);
   if (window_ == nullptr) {
     cerr << "Error creating window: " << SDL_GetError() << endl;
     abort();
@@ -142,6 +142,8 @@ Screen::Screen(ScreenConfig config, char **envp) : config_(std::move(config)) {
 
   set_tty_window_size(tty_fd_, max_cols_, max_rows_, resolution_w_, resolution_h_);
   reset_tty_buffer();
+
+  normal_mode();
 }
 
 char shift_table[] = {
@@ -346,12 +348,12 @@ void Screen::loop() {
     SDL_RenderPresent(renderer_);
     auto now = std::chrono::high_resolution_clock::now();
     if (has_input) {
-      std::cerr << "Input latency "
-                << "input " << std::chrono::duration<float, std::milli>(t_input1 - t0).count() << "ms" << std::endl
-                << "shell " << std::chrono::duration<float, std::milli>(t_shell - t0).count() << "ms" << std::endl
-                << "bg " << std::chrono::duration<float, std::milli>(t_bg - t0).count() << "ms" << std::endl
-                << "chars " << std::chrono::duration<float, std::milli>(t_chars - t0).count() << "ms" << std::endl
-                << "total " << std::chrono::duration<float, std::milli>(now - t0).count() << "ms" << std::endl;
+//      std::cerr << "Input latency "
+//                << "input " << std::chrono::duration<float, std::milli>(t_input1 - t0).count() << "ms" << std::endl
+//                << "shell " << std::chrono::duration<float, std::milli>(t_shell - t0).count() << "ms" << std::endl
+//                << "bg " << std::chrono::duration<float, std::milli>(t_bg - t0).count() << "ms" << std::endl
+//                << "chars " << std::chrono::duration<float, std::milli>(t_chars - t0).count() << "ms" << std::endl
+//                << "total " << std::chrono::duration<float, std::milli>(now - t0).count() << "ms" << std::endl;
     }
 
     last_t = now;
@@ -479,9 +481,13 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
 }
 
 // parse format 123;444;;22
-std::vector<int> parse_csi_colon_ints(const std::vector<uint8_t> &seq, int start, int end, int default_value = 0) {
+std::vector<int> parse_csi_colon_ints(const std::vector<uint8_t> &seq, int start, int end, std::optional<int> default_value = 0) {
   if (start >= end) {
-    return std::vector<int>(1, default_value);
+    if (default_value.has_value()) {
+      return std::vector<int>(1, default_value.value());
+    } else {
+      return {};
+    }
   }
   std::string s;
   std::vector<int> result;
@@ -529,7 +535,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
   if (!seq.empty()) {
     auto op = seq.back();
     if ('A' <= op && op <= 'D') {
-      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
+      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1, 1);
       if (ints.size() > 1) {
         std::cerr << "Invalid CSI n " << op << ": trailing ints" << std::endl;
         return false;
@@ -780,39 +786,122 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
       }
 
     } else if (op == 'h' || op == 'l') {
+      // h: DEC Private Mode Set (DECSET).
+      // l: DEC Private Mode Reet (DECRET).
+      bool enable = op == 'h';
       if (seq.front() == '?') {
-        // h: DEC Private Mode Set (DECSET).
-        // l: DEC Private Mode Reet (DECRET).
-        bool enable = op == 'h';
-
         // xterm mouse tracking in https://mudhalla.net/tintin/info/xterm/
         auto ints = parse_csi_colon_ints(seq, 1, seq.size() - 1);
-        if (!ints.empty()) {
-          auto code = ints[0];
+        bool has_unknown = false;
+        for (auto code : ints) {
           switch (code) {
             case 1:
               // Application Cursor Keys (DECCKM), VT100.
-              current_attrs.set(CHAR_ATTR_CURSOR_APPLICATION_MODE);
-              return true;
+              current_attrs.set(CHAR_ATTR_CURSOR_APPLICATION_MODE, enable);
+              break;
+            case 3:
+              // DECCOLM
+              // set column mode
+              clear_screen(0, 0, max_rows_-1, max_cols_-1);
+              break;
+            case 4:
+              // scrolling mode, DECSCLM, we only support fast scrolling currently
+              if (enable) {
+                std::cerr << "Warning, does not support slow scrolling" << std::endl;
+              }
+              break;
+            case 5:
+              // reverse video DECSCNM
+              current_attrs.set(CHAR_ATTR_REVERSE_VIDEO, enable);
+              break;
+            case 6:
+              // DECCOM
+              if (enable) {
+                std::cerr << "Warning, does not support cursor origin mode";
+              } else {
+                cursor_col = 0;
+                cursor_row = 0;
+              }
+              break;
+            case 7:
+              current_attrs.set(CHAR_ATTR_AUTO_WRAP_MODE, enable);
+              break;
             case 12:
               // Start Blinking Cursor (AT&T 610).
               cursor_blink = enable;
-              return true;
-            case 25:cursor_show = enable;
-              return true;
-
+              break;
+            case 25:
+              cursor_show = enable;
+              break;
+            case 1000:// mouse tracker: send/don't send Mouse X & Y on button press and release.
+              // NOTE: we don't support mousing tracking
+              break;
               // xterm extensions
-            case 1004:current_attrs.set(CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING, enable);
-              return true;
+            case 1004:
+              current_attrs.set(CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING, enable);
+              break;
             case 1049:
               // https://invisible-island.net/xterm/xterm.log.html#xterm_90
-              return false;
+              // https://gitlab.gnome.org/GNOME/vte/-/blob/master/src/vteseq.cc#L527
+              std::cerr << "Currently we don't support alternate screen" << std::endl;
+              break;
             case 2004:
               // When you are in bracketed paste mode and you paste into your terminal the content will be wrapped by the sequences \e[200~ and  \e[201~.
               current_attrs.set(CHAR_ATTR_XTERM_BLOCK_PASTE, enable);
-              return true;
+              break;
+            default:
+              has_unknown = true;
+              break;
           }
         }
+        return !has_unknown;
+      } else {
+        auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
+        bool has_unknown = false;
+        for (auto code : ints) {
+          switch (code) {
+            case 1:
+              // Guarded area transfer GATM
+              if (enable) {
+                std::cerr << "Warning, we don't support GATM currently" << std::endl;
+              }
+              break;
+            case 2:
+              // Keyboard action KAM
+              if (enable) {
+                std::cerr << "Warning, we don't support KAM currently" << std::endl;
+              }
+              break;
+            case 3:
+              //  CONTROL REPRESENTATION MODE CRM
+              if (enable) {
+                std::cerr << "Warning, we don't support CRM control mode currently" << std::endl;
+              }
+              break;
+            case 4:
+              // Insert Mode/Replace Mode
+              if (enable) {
+                std::cerr << "Warning, we don't support insert mode currently" << std::endl;
+              }
+              break;
+            case 5:
+              // STATUS REPORT TRANSFER MODE
+              if (enable) {
+                std::cerr << "Warning, we don't support SRTM currently" << std::endl;
+              }
+              break;
+            case 6:
+              // Erasure Mode
+              if (enable) {
+                std::cerr << "Warning, we don't support erasure mode currently" << std::endl;
+              }
+              break;
+            default:
+              has_unknown = true;
+              break;
+          }
+        }
+        return !has_unknown;
       }
     } else if (op == 'm') {
       if (seq.front() == '>') {
@@ -915,6 +1004,16 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
         return true;
       } else if (ints == std::vector<int>{22, 2}) {
         // push xterm window title on stack
+        xterm_title_stack_.push_back(window_title_);
+        return true;
+      } else if (ints == std::vector<int>{23, 2}) {
+        // push xterm window title on stack
+        if (!xterm_title_stack_.empty()) {
+          window_title_ = xterm_title_stack_.back();
+          xterm_title_stack_.pop_back();
+        } else {
+          std::cerr << "Warning, title stack empty" << std::endl;
+        }
         return true;
       }
     }
@@ -977,8 +1076,18 @@ void Screen::process_input() {
 
     auto input_type = tty_input_.receive_char(input_buffer_[i]);
 
+    bool verbose_read = false;
+
     if (input_type == TTYInputType::Char) {
       auto c = tty_input_.last_char_;
+      if (verbose_read) {
+        std::cout << "char at (" << std::dec << cursor_row << "," << cursor_col << "): 0x" <<
+                  std::setw(2) << std::setfill('0') << std::hex << (int)(uint8_t)c;
+        if (std::isprint(c) && c != '\n') {
+          std::cout << " '" << c << '\'';
+        }
+        std::cout << std::endl;
+      }
       if (c == '\n') {
         new_line();
       } else if (c == 0x0f) {
@@ -1001,13 +1110,26 @@ void Screen::process_input() {
           cursor_col--;
         }
       } else {
-        if (cursor_row < max_rows_ && cursor_col < max_cols_) {
-          get_row(cursor_row)[cursor_col].c = c;
-          get_row(cursor_row)[cursor_col].bg_color = current_bg_color;
-          get_row(cursor_row)[cursor_col].fg_color = current_fg_color;
-          next_cursor();
+        if (current_attrs.test(CHAR_ATTR_AUTO_WRAP_MODE)) {
+          // https://www.vt100.net/docs/vt510-rm/DECAWM.html
+          // If the DECAWM function is set,
+          // then graphic characters received when the cursor is at the right border of the page
+          //  appear at the beginning of the next line.
+          // Any text on the page scrolls up if the cursor is at the end of the scrolling region.
+          if (cursor_col == max_cols_) {
+            new_line();
+            carriage_return();
+          }
+          fill_current_cursor(c);
+          cursor_col++;
         } else {
-//          std::cerr << "Warning: cursor out of range: " << cursor_row << ":" << cursor_col << std::endl;
+          // If the DECAWM function is reset,
+          // then graphic characters received when the cursor is at the right border of the page
+          //  replace characters already on the page.
+          fill_current_cursor(c);
+          if (cursor_col < max_cols_ - 1) {
+            cursor_col++;
+          }
         }
       }
     } else if (input_type == TTYInputType::CSI) {
@@ -1020,28 +1142,32 @@ void Screen::process_input() {
         std::cout << std::endl;
         hexdump(std::cout, tty_input_.buffer_);
       } else {
-//        std::cout << "csi seq ESC [ ";
-//        for (auto c : tty_input_.buffer_) {
-//          std::cout << c;
-//        }
-//        std::cout << std::endl;
-//        hexdump(std::cout, tty_input_.buffer_);
+        if (verbose_read) {
+          std::cout << "csi seq ESC [ ";
+          for (auto c : tty_input_.buffer_) {
+            std::cout << c;
+          }
+          std::cout << std::endl;
+          hexdump(std::cout, tty_input_.buffer_);
+        }
       }
     } else if (input_type == TTYInputType::TerminatedByST) {
+      if (verbose_read) {
+        std::cout << "TerminatedByST: " << std::endl;
+        hexdump(std::cout, tty_input_.buffer_);
+      }
       const auto &b = tty_input_.buffer_;
       if (!b.empty()) {
         if (b[0] == ']') {
           // OSC: Operating System Control
           if (b.size() >= 3 && b[1] == '0' && b[2] == ';') {
             // set title
-            std::string title(reinterpret_cast<const char *>(b.data() + 3), b.size() - 3);
-            SDL_SetWindowTitle(window_, title.c_str());
+            window_title_ = std::string(reinterpret_cast<const char *>(b.data() + 3), b.size() - 3);
+            SDL_SetWindowTitle(window_, window_title_.c_str());
           }
         }
       }
-
     }
-
   }
 }
 bool Screen::check_child_process() {
