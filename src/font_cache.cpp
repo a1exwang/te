@@ -1,4 +1,5 @@
 #include <te/screen.hpp>
+#include <te/display.hpp>
 
 #include <cassert>
 
@@ -27,35 +28,76 @@ namespace std {
 
 namespace te {
 
+FontCache::FontCache(SDL_Renderer *renderer, TTF_Font *font) :renderer_(renderer), font_(font) {
+
+  std::vector<uint32_t> styles = {
+      TTF_STYLE_NORMAL,
+
+      TTF_STYLE_UNDERLINE,
+      TTF_STYLE_BOLD,
+      TTF_STYLE_ITALIC,
+
+      TTF_STYLE_UNDERLINE | TTF_STYLE_BOLD,
+      TTF_STYLE_UNDERLINE | TTF_STYLE_ITALIC,
+      TTF_STYLE_BOLD | TTF_STYLE_ITALIC,
+
+      TTF_STYLE_UNDERLINE | TTF_STYLE_BOLD | TTF_STYLE_ITALIC,
+  };
+
+  for (auto style : styles) {
+    auto [it, ok] = fc.insert({style, {128, nullptr}});
+    assert(ok);
+
+    TTF_SetFontStyle(font_, style);
+    for (int i = 0; i < 128; i++) {
+      if (std::isprint(i)) {
+        SDL_Color white_color{0xff,0xff,0xff,0xff};
+        SDL_Surface *text_surf = TTF_RenderGlyph_Blended(font_, i, white_color);
+        if (!text_surf) {
+          std::cerr << "Failed to TTF_RenderGlyph_Blended" << SDL_GetError() << std::endl;
+          abort();
+        }
+
+        auto text = SDL_CreateTextureFromSurface(renderer_, text_surf);
+        if (!text) {
+          std::cerr << "Failed to SDL_CreateTextureFromSurface when creating fonts:" << SDL_GetError() << std::endl;
+          abort();
+        }
+
+        it->second[i] = text;
+      }
+    }
+  }
+}
 
 
 static SDL_Color to_sdl_color(Color color) {
   return SDL_Color{color.r, color.g, color.b, color.a};
 }
 
-void Screen::render_chars() {
+void Display::render_chars() {
   for (int row = 0; row < max_rows_; row++) {
-    auto &row_data = get_row(row);
+    auto &row_data = current_screen_->get_row(row);
     for (int col = 0; col < max_cols_; col++) {
       auto &c = row_data[col];
       SDL_Rect glyph_box{glyph_width_ * col, glyph_height_ * row, glyph_width_, glyph_height_};
       Color fg = c.fg_color, bg = c.bg_color;
 
       // draw cursor background
-      if (row == cursor_row && col == cursor_col && cursor_show) {
-        if (cursor_blink) {
-          if (cursor_flip) {
-            bg = cursor_color;
-            fg = cursor_fg_color;
+      if (row == current_screen_->cursor_row && col == current_screen_->cursor_col && current_screen_->cursor_show) {
+        if (current_screen_->cursor_blink) {
+          if (current_screen_->cursor_flip) {
+            bg = current_screen_->cursor_color;
+            fg = current_screen_->cursor_fg_color;
           }
           auto now = std::chrono::high_resolution_clock::now();
-          if (now - cursor_last_time > blink_interval) {
-            cursor_flip = !cursor_flip;
-            cursor_last_time = now;
+          if (now - current_screen_->cursor_last_time > current_screen_->blink_interval) {
+            current_screen_->cursor_flip = !current_screen_->cursor_flip;
+            current_screen_->cursor_last_time = now;
           }
         } else {
-          bg = cursor_color;
-          fg = cursor_fg_color;
+          bg = current_screen_->cursor_color;
+          fg = current_screen_->cursor_fg_color;
         }
       } else if (has_selection) {
         auto start = std::make_tuple(selection_start_row, selection_start_col),
