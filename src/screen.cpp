@@ -172,7 +172,11 @@ std::vector<int> parse_csi_colon_ints(const std::vector<uint8_t> &seq, int start
       s.push_back(seq[i]);
     } else if (seq[i] == ';') {
       if (s.empty()) {
-        result.push_back(0);
+        if (default_value.has_value()) {
+          result.push_back(default_value.value());
+        } else {
+          result.push_back(0);
+        }
       } else {
         result.push_back(std::stoi(s));
       }
@@ -185,6 +189,64 @@ std::vector<int> parse_csi_colon_ints(const std::vector<uint8_t> &seq, int start
     result.push_back(std::stoi(s));
   }
   return result;
+}
+
+template <typename>
+struct TupleAddOne;
+
+template <typename... First>
+struct TupleAddOne<std::tuple<First...>> {
+  using type = std::tuple<First..., int>;
+};
+
+template <int N>
+struct NTuple {
+  using type = typename TupleAddOne<typename NTuple<N-1>::type>::type;
+};
+
+template <>
+struct NTuple<0> {
+  using type = std::tuple<>;
+};
+
+struct InvalidCSISeq :public std::exception {};
+
+
+#include <type_traits>
+
+template <typename F, size_t... Is>
+auto gen_tuple_impl(F func, std::index_sequence<Is...> ) {
+  return std::make_tuple(func(Is)...);
+}
+
+template <size_t N, typename F>
+auto gen_tuple(F func) {
+  return gen_tuple_impl(func, std::make_index_sequence<N>{} );
+}
+
+// Tp must be tuple<int, int ...>
+template <typename Tp>
+void copy_vector_to_tuple(const std::vector<int> &vec, Tp &tp) {
+  constexpr int N = std::tuple_size_v<Tp>;
+  tp = gen_tuple<N>([&vec](size_t i) { return vec[i]; });
+}
+
+
+template <int N>
+typename NTuple<N>::type parse_csi_n(const std::vector<uint8_t> &seq, int start, int end, int default_value) {
+  auto ints = parse_csi_colon_ints(seq, start, end, default_value);
+  if (ints.size() != N) {
+    throw InvalidCSISeq();
+  }
+
+  typename NTuple<N>::type tp;
+  copy_vector_to_tuple(ints, tp);
+  return tp;
+}
+
+template <int N>
+typename NTuple<N>::type csi_n(const std::vector<uint8_t> &seq, int default_value) {
+  return parse_csi_n<N>(seq, 0, seq.size() - 1, default_value);
 }
 
 Color ColorTable16[] = {
@@ -207,21 +269,18 @@ Color ColorTable16[] = {
 };
 
 bool Screen::process_csi(const std::vector<uint8_t> &seq) {
+  try {
+    if (seq.empty()) {
+      return false;
+    }
 
-  if (!seq.empty()) {
     auto op = seq.back();
     if ('A' <= op && op <= 'D') {
       // CSI A up
       // CSI B down
       // CSI C forward
       // CSI D backward
-      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1, 1);
-      if (ints.size() > 1) {
-        std::cerr << "Invalid CSI n " << op << ": trailing ints" << std::endl;
-        return false;
-      }
-
-      int n = ints[0];
+      auto[n] = csi_n<1>(seq, 1);
       switch (op) {
         // TODO: report out of range
         case 'A':
@@ -254,16 +313,9 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
       }
       return true;
     } else if (op == 'G') {
-      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
-      if (ints.size() == 1) {
-        if (ints[0] == 0) {
-          cursor_col = 0;
-        } else {
-          cursor_col = ints[0] - 1;
-        }
-        return true;
-      }
-
+      auto [n] = csi_n<1>(seq, 1);
+      cursor_col = n - 1;
+      return true;
     } else if (op == 'H') {
       // move cursor to row:col
       auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
@@ -310,12 +362,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
       }
     } else if (op == 'J') {
       // clear part of screen
-      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
-      if (ints.size() >= 2) {
-        std::cerr << "Invalid clear screen sequence " << std::endl;
-        return false;
-      }
-      auto code = ints[0];
+      auto [code] = csi_n<1>(seq, 0);
       if (code == 0) {
         // to end of screen
         clear_screen(cursor_row, cursor_col, max_rows_ - 1, max_cols_ - 1);
@@ -338,18 +385,16 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
             Ps = 1  ⇒  Erase to Left.
             Ps = 2  ⇒  Erase All.
        */
-      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
-      if (!ints.empty()) {
-        if (ints[0] == 0) {
-          clear_screen(cursor_row, cursor_col, cursor_row, max_cols_ - 1);
-          return true;
-        } else if (ints[0] == 1) {
-          clear_screen(cursor_row, 0, cursor_row, cursor_col);
-          return true;
-        } else if (ints[0] == 2) {
-          clear_screen(cursor_row, 0, cursor_row, max_cols_ - 1);
-          return true;
-        }
+      auto [code] = csi_n<1>(seq, 0);
+      if (code == 0) {
+        clear_screen(cursor_row, cursor_col, cursor_row, max_cols_ - 1);
+        return true;
+      } else if (code == 1) {
+        clear_screen(cursor_row, 0, cursor_row, cursor_col);
+        return true;
+      } else if (code == 2) {
+        clear_screen(cursor_row, 0, cursor_row, max_cols_ - 1);
+        return true;
       }
 
     } else if (op == 'L') {
@@ -364,44 +409,40 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
 
     } else if (op == 'S' || op == 'T') {
       // scroll
-      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1, 1);
-      if (ints.size() == 1) {
-        int scroll_diff = ((op == 'S') ? -1 : 1) * ints[0];
-        if (current_screen_start_row + scroll_diff < 0) {
-          current_screen_start_row = 0;
-        } else if (current_screen_start_row + scroll_diff + max_rows_ > rows_.size()) {
-          auto new_lines = rows_.size() - (current_screen_start_row + scroll_diff + max_rows_);
-          for (int i = 0; i < new_lines; i++) {
-            rows_.emplace_back(max_cols_);
-          }
-
-          current_screen_start_row += scroll_diff;
-        } else {
-          current_screen_start_row += scroll_diff;
+      auto [code] = csi_n<1>(seq, 1);
+      int scroll_diff = ((op == 'S') ? -1 : 1) * code;
+      if (current_screen_start_row + scroll_diff < 0) {
+        current_screen_start_row = 0;
+      } else if (current_screen_start_row + scroll_diff + max_rows_ > rows_.size()) {
+        auto new_lines = rows_.size() - (current_screen_start_row + scroll_diff + max_rows_);
+        for (int i = 0; i < new_lines; i++) {
+          rows_.emplace_back(max_cols_);
         }
-        return true;
+
+        current_screen_start_row += scroll_diff;
+      } else {
+        current_screen_start_row += scroll_diff;
       }
+      return true;
 
     } else if (op == 'X') {
       // erase n chars from current
-      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1, 1);
-      if (ints.size() == 1) {
-        int row = cursor_row;
-        int col = cursor_col;
-        int count = 0;
-        while (count > 0) {
-          get_row(row)[col].reset();
-          count--;
-          col++;
-          if (col == max_cols_) {
-            row++;
-          }
-          if (row == max_cols_) {
-            break;
-          }
+      auto [n] = csi_n<1>(seq, 1);
+      int row = cursor_row;
+      int col = cursor_col;
+      int count = n;
+      while (count > 0) {
+        get_row(row)[col].reset();
+        count--;
+        col++;
+        if (col == max_cols_) {
+          row++;
         }
-        return true;
+        if (row == max_cols_) {
+          break;
+        }
       }
+      return true;
 
     } else if (op == 'c') {
       if (seq.front() == '>') {
@@ -433,38 +474,26 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
           always zero.
          */
 
-        auto ints = parse_csi_colon_ints(seq, 1, seq.size() - 1);
-        if (!ints.empty()) {
-          auto code = ints[0];
-          if (code == 0) {
-            // Request terminal ID
-            std::stringstream ss;
-            // VT100 xterm95
-            ss << CSI << ">0;95;0c";
-            display_->write_to_tty(ss.str());
-            return true;
-          }
+        auto [code] = parse_csi_n<1>(seq, 1, seq.size()-1, 0);
+        if (code == 0) {
+          // Request terminal ID
+          std::stringstream ss;
+          // VT100 xterm95
+          ss << CSI << ">0;95;0c";
+          display_->write_to_tty(ss.str());
+          return true;
         }
 
       } else {
-        auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
-        if (ints.size() == 1) {
-          // CSI ? 1 ; 2 c
-          display_->write_to_tty("\x1b[?1;2c");
-          return true;
-        }
-      }
-    } else if (op == 'd') {
-      auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1);
-      if (ints.size() == 1) {
-        if (ints[0] == 0) {
-          cursor_row = 0;
-        } else {
-          cursor_row = ints[0] - 1;
-        }
+        auto [code] = csi_n<1>(seq, 0);
+        // CSI ? 1 ; 2 c
+        display_->write_to_tty("\x1b[?1;2c");
         return true;
       }
-
+    } else if (op == 'd') {
+      auto [code] = csi_n<1>(seq, 0);
+      cursor_row = code - 1;
+      return true;
     } else if (op == 'h' || op == 'l') {
       // h: DEC Private Mode Set (DECSET).
       // l: DEC Private Mode Reet (DECRET).
@@ -482,7 +511,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
             case 3:
               // DECCOLM
               // set column mode
-              clear_screen(0, 0, max_rows_-1, max_cols_-1);
+              clear_screen(0, 0, max_rows_ - 1, max_cols_ - 1);
               break;
             case 4:
               // scrolling mode, DECSCLM, we only support fast scrolling currently
@@ -503,22 +532,19 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
                 cursor_row = 0;
               }
               break;
-            case 7:
-              current_attrs.set(CHAR_ATTR_AUTO_WRAP_MODE, enable);
+            case 7:current_attrs.set(CHAR_ATTR_AUTO_WRAP_MODE, enable);
               break;
             case 12:
               // Start Blinking Cursor (AT&T 610).
               cursor_blink = enable;
               break;
-            case 25:
-              cursor_show = enable;
+            case 25:cursor_show = enable;
               break;
             case 1000:// mouse tracker: send/don't send Mouse X & Y on button press and release.
               // NOTE: we don't support mousing tracking
               break;
               // xterm extensions
-            case 1004:
-              current_attrs.set(CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING, enable);
+            case 1004:current_attrs.set(CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING, enable);
               break;
             case 47:
             case 1049:
@@ -531,8 +557,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
               // When you are in bracketed paste mode and you paste into your terminal the content will be wrapped by the sequences \e[200~ and  \e[201~.
               current_attrs.set(CHAR_ATTR_XTERM_BLOCK_PASTE, enable);
               break;
-            default:
-              has_unknown = true;
+            default:has_unknown = true;
               break;
           }
         }
@@ -578,8 +603,7 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
                 std::cerr << "Warning, we don't support erasure mode currently" << std::endl;
               }
               break;
-            default:
-              has_unknown = true;
+            default:has_unknown = true;
               break;
           }
         }
@@ -702,8 +726,11 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
         return true;
       }
     }
+    return false;
+  } catch (const InvalidCSISeq &e) {
+    std::cerr << "Unknown CSI Seq: " << e.what() << std::endl;
+    return false;
   }
-  return false;
 }
 
 
