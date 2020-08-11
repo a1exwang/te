@@ -42,7 +42,6 @@ class TTYInput {
   };
 
   InputState input_state = InputState::Idle;
-  char last_char_;
   std::vector<std::uint8_t> buffer_;
 };
 
@@ -97,6 +96,8 @@ class Display {
   std::tuple<int, int> window_to_console(int x, int y) const {
     return {y / glyph_height_, x / glyph_width_};
   }
+
+  void switch_screen(bool alternate_screen);
 
 
 // private:

@@ -124,30 +124,39 @@ void hexdump(std::ostream &os, std::span<const uint8_t> data) {
 }
 
 void Display::process_input() {
+  bool verbose_read = true;
+  bool has_color = true;
+
   std::array<char, 1024> input_buffer; // NOLINT(cppcoreguidelines-pro-type-member-init)
 
   int nread = read(tty_fd_, input_buffer.data(), input_buffer.size());
   for (int i = 0; i < nread; i++) {
-    bool verbose = true;
-    if (verbose) {
-      auto c = input_buffer[i];
-      log_stream_.put(c);
-      log_stream_.flush();
-//      std::cout << "read() at (" << std::dec << cursor_row << "," << cursor_col << "): 0x" <<
-//                std::setw(2) << std::setfill('0') << std::hex << (int)(uint8_t)c;
-//      if (std::isprint(c) && c != '\n') {
-//        std::cout << " '" << c << '\'';
-//      }
-//      std::cout << std::endl;
-    }
-
+    char c = input_buffer[i];
     auto input_type = tty_input_.receive_char(input_buffer[i]);
 
-    bool verbose_read = false;
-
     if (input_type == TTYInputType::Char) {
-      auto c = tty_input_.last_char_;
       if (verbose_read) {
+        if (std::isprint(c)) {
+          log_stream_.put(c);
+          log_stream_.flush();
+        } else {
+          if (c == '\n') {
+            log_stream_.put(c);
+          } else {
+            if (has_color) {
+              log_stream_ << "\x1b[33m{\x1b[32m";
+            } else {
+              log_stream_ << "{";
+            }
+            log_stream_ << "\\x" << (int)c << "";
+            if (has_color) {
+              log_stream_ << "\x1b[33m}\x1b[0m";
+            } else {
+              log_stream_ << "}";
+            }
+            log_stream_.flush();
+          }
+        }
         std::cout << "char at (" << std::dec << current_screen_->cursor_row << "," << current_screen_->cursor_col << "): 0x" <<
                   std::setw(2) << std::setfill('0') << std::hex << (int)(uint8_t)c;
         if (std::isprint(c) && c != '\n') {
@@ -216,12 +225,42 @@ void Display::process_input() {
           }
           std::cout << std::endl;
           hexdump(std::cout, tty_input_.buffer_);
+
         }
+      }
+      if (verbose_read) {
+        if (has_color) {
+          log_stream_ << "\x1b[33m{\x1b[32m";
+        } else {
+          log_stream_ << "{";
+        }
+        log_stream_ << "CSI ";
+        log_stream_.write((const char*)tty_input_.buffer_.data(), tty_input_.buffer_.size());
+        if (has_color) {
+          log_stream_ << "\x1b[33m}\x1b[0m";
+        } else {
+          log_stream_ << "}";
+        }
+        log_stream_.flush();
       }
     } else if (input_type == TTYInputType::TerminatedByST) {
       if (verbose_read) {
         std::cout << "TerminatedByST: " << std::endl;
         hexdump(std::cout, tty_input_.buffer_);
+
+        if (has_color) {
+          log_stream_ << "\x1b[33m{\x1b[32m";
+        } else {
+          log_stream_ << "{";
+        }
+        log_stream_ << "ESC ";
+        log_stream_.write((const char*)tty_input_.buffer_.data(), tty_input_.buffer_.size());
+        if (has_color) {
+          log_stream_ << "\x1b[33m}\x1b[0m";
+        } else {
+          log_stream_ << "}";
+        }
+        log_stream_.flush();
       }
       const auto &b = tty_input_.buffer_;
       if (!b.empty()) {
@@ -291,8 +330,8 @@ void Display::resize(int w, int h) {
   max_rows_ = resolution_h_ / glyph_height_;
   set_tty_window_size(tty_fd_, max_cols_, max_rows_, resolution_w_, resolution_h_);
 
-  default_screen_->resize(w, h);
-  alternate_screen_->resize(w, h);
+  default_screen_->resize(max_rows_, max_cols_);
+  alternate_screen_->resize(max_rows_, max_cols_);
 }
 void Display::loop() {
 
@@ -602,6 +641,14 @@ void Display::clear_selection() {
   selection_end_row = 0;
   selection_end_col = 0;
   has_selection = false;
+}
+void Display::switch_screen(bool alternate_screen) {
+  alternate_screen_->reset_tty_buffer();
+  if (alternate_screen) {
+    current_screen_ = alternate_screen_.get();
+  } else {
+    current_screen_ = default_screen_.get();
+  }
 }
 
 }

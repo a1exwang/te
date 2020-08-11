@@ -92,7 +92,6 @@ std::vector<std::function<void()>> CSI_FinalBytes = {
 // ST: String Terminator 0x9c or ESC 0x5c, could also be 0x07 in xterm
 
 TTYInputType TTYInput::receive_char(uint8_t c) {
-  last_char_ = '?';
   if (input_state == InputState::Escape) {
     if (c == '[') {
       // CSI
@@ -109,7 +108,6 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
       input_state = InputState::WaitForST;
       return TTYInputType::Intermediate;
     } else {
-      last_char_ = c;
       input_state = InputState::Idle;
       return TTYInputType::Char;
     }
@@ -118,7 +116,6 @@ TTYInputType TTYInput::receive_char(uint8_t c) {
       input_state = InputState::Escape;
       return TTYInputType::Intermediate;
     } else {
-      last_char_ = c;
       return TTYInputType::Char;
     }
   } else if (input_state == InputState::CSI) {
@@ -214,6 +211,10 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
   if (!seq.empty()) {
     auto op = seq.back();
     if ('A' <= op && op <= 'D') {
+      // CSI A up
+      // CSI B down
+      // CSI C forward
+      // CSI D backward
       auto ints = parse_csi_colon_ints(seq, 0, seq.size() - 1, 1);
       if (ints.size() > 1) {
         std::cerr << "Invalid CSI n " << op << ": trailing ints" << std::endl;
@@ -519,10 +520,12 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
             case 1004:
               current_attrs.set(CHAR_ATTR_XTERM_WINDOW_FOCUS_TRACKING, enable);
               break;
+            case 47:
             case 1049:
+              // switch to alternate buffer and save cursor
               // https://invisible-island.net/xterm/xterm.log.html#xterm_90
               // https://gitlab.gnome.org/GNOME/vte/-/blob/master/src/vteseq.cc#L527
-              std::cerr << "Currently we don't support alternate screen" << std::endl;
+              display_->switch_screen(enable);
               break;
             case 2004:
               // When you are in bracketed paste mode and you paste into your terminal the content will be wrapped by the sequences \e[200~ and  \e[201~.
@@ -684,6 +687,9 @@ bool Screen::process_csi(const std::vector<uint8_t> &seq) {
       } else if (ints == std::vector<int>{22, 2}) {
         // push xterm window title on stack
         display_->xterm_title_stack_.push_back(display_->window_title_);
+        return true;
+      } else if (ints == std::vector<int>{23, 1}) {
+        // pop xterm icon title from stack
         return true;
       } else if (ints == std::vector<int>{23, 2}) {
         // push xterm window title on stack
