@@ -9,6 +9,8 @@
 #include <vector>
 
 #include <te/basic.hpp>
+#include <te/subprocess.hpp>
+#include <te/tty_input.hpp>
 
 struct SDL_Window;
 struct SDL_Texture;
@@ -30,28 +32,15 @@ class FontCache {
   TTF_Font *font_;
 };
 
-class TTYInput {
- public:
-  TTYInputType receive_char(uint8_t c);
-
-  enum class InputState {
-    Idle,
-    Escape,
-    CSI,
-    WaitForST,
-  };
-
-  InputState input_state = InputState::Idle;
-  std::vector<std::uint8_t> buffer_;
-};
-
-
 class Screen;
 class Display {
  public:
   Display(std::ostream &log_stream,
+          const std::vector<std::string> &args,
+          const std::string &term_env,
           const std::string &font_file_path,
           int font_size,
+          const std::string &background_image_path,
           const std::vector<std::string> &environment_variables);
 
   ~Display();
@@ -62,7 +51,7 @@ class Display {
   bool check_child_process();
   void process_input();
   void write_pending_input_data(std::vector<uint8_t> &input_buffer);
-  void write_to_tty(std::string_view s);
+  void write_to_tty(std::string_view s) const;
 
   // screen
   void resize(int w, int h);
@@ -70,7 +59,7 @@ class Display {
   // clipboard
   void clear_selection();
   std::string clipboard_copy();
-  void clipboard_paste(std::string_view clipboard_text);
+  void clipboard_paste(std::string_view clipboard_text) const;
 
   // rendering
   void render_chars();
@@ -113,9 +102,8 @@ class Display {
   std::unique_ptr<FontCache> font_cache_;
 
   // child process
-  int tty_fd_ = -1;
-  int child_pid_ = 0;
   TTYInput tty_input_;
+  std::unique_ptr<Subprocess> subprocess_;
 
   // window title
   std::string window_title_ = "alex's te";

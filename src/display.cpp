@@ -1,7 +1,6 @@
 #include <te/display.hpp>
 
 #include <cmath>
-#include <csignal>
 
 #include <filesystem>
 #include <iomanip>
@@ -12,8 +11,6 @@
 #include <unordered_set>
 
 #include <unistd.h>
-#include <wait.h>
-#include <termios.h>
 #include <sys/ioctl.h>
 
 #include <SDL2/SDL.h>
@@ -25,7 +22,7 @@
 #include <SDL2/SDL_image.h>
 
 #include <te/screen.hpp>
-#include "../child.hpp"
+#include <te/subprocess.hpp>
 
 namespace te {
 void set_tty_window_size(int tty_fd, int cols, int rows, int res_w, int res_h) {
@@ -52,27 +49,12 @@ Color Display::map_color(Color color) const {
   return color;
 }
 
-bool Display::check_child_process() {
-  siginfo_t siginfo;
-  siginfo.si_pid = 0;
-  if (waitid(P_PID, child_pid_, &siginfo, WEXITED | WNOHANG) < 0) {
-    perror("waitid");
-    abort();
-  }
-  if (siginfo.si_pid != 0) {
-    child_pid_ = 0;
-    return false;
-  } else {
-    return true;
-  }
-
-}
 void Display::write_pending_input_data(std::vector<uint8_t> &input_buffer) {
 
   if (!input_buffer.empty()) {
     int total_write = 0;
     while (total_write < input_buffer.size()) {
-      int nwrite = write(tty_fd_, input_buffer.data(), input_buffer.size());
+      int nwrite = write(subprocess_->tty_fd(), input_buffer.data(), input_buffer.size());
       if (nwrite < 0) {
         if (!(errno == EAGAIN || errno == EWOULDBLOCK)) {
           perror("write");
@@ -129,7 +111,7 @@ void Display::process_input() {
 
   std::array<char, 1024> input_buffer; // NOLINT(cppcoreguidelines-pro-type-member-init)
 
-  int nread = read(tty_fd_, input_buffer.data(), input_buffer.size());
+  int nread = read(subprocess_->tty_fd(), input_buffer.data(), input_buffer.size());
   for (int i = 0; i < nread; i++) {
     char c = input_buffer[i];
     auto input_type = tty_input_.receive_char(input_buffer[i]);
@@ -328,7 +310,7 @@ void Display::resize(int w, int h) {
   resolution_w_ = w;
   max_cols_ = resolution_w_ / glyph_width_;
   max_rows_ = resolution_h_ / glyph_height_;
-  set_tty_window_size(tty_fd_, max_cols_, max_rows_, resolution_w_, resolution_h_);
+  set_tty_window_size(subprocess_->tty_fd(), max_cols_, max_rows_, resolution_w_, resolution_h_);
 
   default_screen_->resize(max_rows_, max_cols_);
   alternate_screen_->resize(max_rows_, max_cols_);
@@ -338,16 +320,15 @@ void Display::loop() {
   SDL_Event event;
   std::chrono::high_resolution_clock::time_point last_t;
   std::vector<uint8_t> input_buffer;
-  bool loop_continue = true;
 
-  while (loop_continue) {
+  while (true) {
     bool has_input = false;
     auto t0 = std::chrono::high_resolution_clock::now();
     // Process SDL events
     while (SDL_PollEvent(&event)) {
       switch (event.type) {
         case SDL_QUIT: {
-          loop_continue = false;
+          return;
           break;
           case SDL_WINDOWEVENT: {
             if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
@@ -437,11 +418,12 @@ void Display::loop() {
     }
     auto t_input1 = std::chrono::high_resolution_clock::now();
 
-    if (child_pid_) {
-      loop_continue = check_child_process();
-      write_pending_input_data(input_buffer);
-      process_input();
+    // Communicate with subprocess
+    if (subprocess_->check_exited()) {
+      return;
     }
+    write_pending_input_data(input_buffer);
+    process_input();
 
     auto t_shell = std::chrono::high_resolution_clock::now();
 
@@ -476,16 +458,25 @@ void Display::loop() {
 }
 Display::Display(
     std::ostream &log_stream,
+    const std::vector<std::string> &args,
+    const std::string &term_env,
     const std::string &font_file_path,
     int font_size,
+    const std::string &background_image_path,
     const std::vector<std::string> &environment_variables) : log_stream_(log_stream) {
 
+  // We just hard-code an initial resolution.
+  // After the window is created, it might be resized.
+  resolution_w_ = 1920;
+  resolution_h_ = 1080;
+
+  /**
+   * Initialize SDL
+   */
   if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
     std::cerr << "Error initializing SDL: " << SDL_GetError() << std::endl;
     abort();
   }
-  resolution_w_ = 1920;
-  resolution_h_ = 1080;
 
   window_ = SDL_CreateWindow(window_title_.c_str(), 0, 0, resolution_w_, resolution_h_, SDL_WINDOW_SHOWN);
   if (window_ == nullptr) {
@@ -501,7 +492,9 @@ Display::Display(
     abort();
   }
 
-  // Start TTF
+  /**
+   * Initialize SDL_TTF
+   */
   if (TTF_Init() < 0) {
     std::cerr << "Error intializing SDL_ttf: " << TTF_GetError() << std::endl;
     abort();
@@ -530,9 +523,10 @@ Display::Display(
 
   font_cache_ = std::make_unique<FontCache>(renderer_, font_);
 
-  // Start Background Image
+  /**
+   * Initialize SDL_Image for background image
+   */
   IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
-  std::string background_image_path("/home/alexwang/bg.jpg");
   if (std::filesystem::exists(background_image_path)) {
     background_image_texture = IMG_LoadTexture(renderer_, background_image_path.c_str());
     if (background_image_texture) {
@@ -556,36 +550,33 @@ Display::Display(
   // Make sure our image stays in the background using alpha blending
   SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
-  std::string program = "/bin/bash";
-  char *argv[] = {(char *) program.c_str(), nullptr};
-  std::vector<char *> envps;
+  /**
+   * Initialize subprocess
+   */
+  std::string program = args[0];
   std::vector<std::string> envs;
   for (const auto &env : environment_variables) {
     if (env.starts_with("TERM=")) {
-      envs.emplace_back("TERM=rxvt");
+      envs.emplace_back("TERM=" + term_env);
     } else {
       envs.emplace_back(env);
     }
   }
-  for (auto &env : envs) {
-    envps.push_back((char *) env.c_str());
-  }
-  envps.push_back(nullptr);
-  std::tie(child_pid_, tty_fd_) = start_child(program, argv, envps.data());
+  subprocess_ = std::make_unique<Subprocess>(program, args, envs);
+  set_tty_window_size(subprocess_->tty_fd(), max_cols_, max_rows_, resolution_w_, resolution_h_);
 
+  /**
+   * Initialize multiple screens
+   */
   default_screen_ = std::make_unique<Screen>(this);
   alternate_screen_ = std::make_unique<Screen>(this);
   current_screen_ = default_screen_.get();
-
-  set_tty_window_size(tty_fd_, max_cols_, max_rows_, resolution_w_, resolution_h_);
-//  reset_tty_buffer();
-//
-//  normal_mode();
 }
-void Display::write_to_tty(std::string_view s) {
+
+void Display::write_to_tty(std::string_view s) const {
   int offset = 0;
   while (offset < s.size()) {
-    int nread = write(tty_fd_, s.data() + offset, s.size() - offset);
+    int nread = write(subprocess_->tty_fd(), s.data() + offset, s.size() - offset);
     if (nread < 0) {
       if (errno != EAGAIN && errno != EWOULDBLOCK) {
         std::cerr << "Failed to write to tty_fd: " << strerror(errno) << std::endl;
@@ -596,6 +587,7 @@ void Display::write_to_tty(std::string_view s) {
     }
   }
 }
+
 Display::~Display() {
   if (font_) {
     TTF_CloseFont(font_);
@@ -608,7 +600,7 @@ Display::~Display() {
   TTF_Quit();
   SDL_Quit();
 }
-void Display::clipboard_paste(std::string_view clipboard_text) {
+void Display::clipboard_paste(std::string_view clipboard_text) const {
 //  auto clipboard_text = SDL_GetClipboardText();
   if (current_screen_->current_attrs.test(CHAR_ATTR_XTERM_BLOCK_PASTE)) {
     write_to_tty("\1b[200~");

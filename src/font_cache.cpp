@@ -1,14 +1,15 @@
-#include <te/screen.hpp>
 #include <te/display.hpp>
 
 #include <cassert>
 
-#include <vector>
-#include <unordered_map>
 #include <tuple>
+#include <unordered_map>
+#include <vector>
 
 #include <SDL2/SDL_rect.h>
 #include <SDL2/SDL_ttf.h>
+
+#include <te/screen.hpp>
 
 namespace std {
   template <>

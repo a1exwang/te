@@ -1,13 +1,16 @@
 #define _POSIX_SOURCE
+#include <te/subprocess.hpp>
 #include <string>
 #include <tuple>
 #include <iostream>
+#include <vector>
+#include <string_view>
 
 #include <unistd.h>
 #include <fcntl.h>
 #include <termios.h>
 #include <sys/ioctl.h>
-//#include <io.h>
+#include <wait.h>
 
 namespace te {
 
@@ -37,14 +40,30 @@ std::tuple<std::string, int> setup_tty() {
   return {slave_tty, ptyfd};
 }
 
-std::tuple<int, int> start_child(std::string command_line, char **argv, char **envp) {
-  auto [slave_pty, master_fd] = setup_tty();
+Subprocess::Subprocess(std::string command_line,
+                       std::vector<std::string> args,
+                       std::vector<std::string> envs)
+    :command_line_(std::move(command_line)), args_(std::move(args)), envs_(std::move(envs)) {
+
+  std::vector<char*> argv;
+  for (const auto &arg : args_) {
+    argv.emplace_back(const_cast<char*>(arg.c_str()));
+  }
+  argv.emplace_back(nullptr);
+
+  std::vector<char*> envp;
+  for (const auto &env : envs_) {
+    envp.emplace_back(const_cast<char*>(env.c_str()));
+  }
+  envp.emplace_back(nullptr);
+
+
+  auto [slave_pty, master_pty] = setup_tty();
 
   int pid = fork();
   if (pid < 0) {
     perror("fork");
     abort();
-    return {-1, -1};
   } else if (pid == 0) {
     // child
 
@@ -54,7 +73,7 @@ std::tuple<int, int> start_child(std::string command_line, char **argv, char **e
       abort();
     }
 
-    int slave_fd = ioctl(master_fd, TIOCGPTPEER, O_RDWR | O_NOCTTY | O_CLOEXEC);
+    int slave_fd = ioctl(master_pty, TIOCGPTPEER, O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (slave_fd < 0) {
       perror("ioctl TIOCGPTPEER");
       abort();
@@ -79,15 +98,29 @@ std::tuple<int, int> start_child(std::string command_line, char **argv, char **e
     }
     // map stdin/stdout to tty fd
 
-    int ret = execve(command_line.c_str(), argv, envp);
+    int ret = execve(command_line.c_str(), argv.data(), envp.data());
     if (ret < 0) {
       perror("execve");
       abort();
     }
-    // unreachable
-    return {-1, -1};
   } else {
-    return {pid, master_fd};
+    child_pid_ = pid;
+    tty_fd_ = master_pty;
+  }
+}
+
+bool Subprocess::check_exited() const {
+  siginfo_t siginfo;
+  siginfo.si_pid = 0;
+  if (waitid(P_PID, child_pid_, &siginfo, WEXITED | WNOHANG) < 0) {
+    perror("waitid");
+    abort();
+  }
+  // when si_pid == 0, the child process has not exited
+  if (siginfo.si_pid == 0) {
+    return false;
+  } else {
+    return true;
   }
 }
 
