@@ -21,6 +21,7 @@
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
 
+#include <te/font_cache.hpp>
 #include <te/screen.hpp>
 #include <te/subprocess.hpp>
 
@@ -68,13 +69,13 @@ void Display::write_pending_input_data(std::vector<uint8_t> &input_buffer) {
   }
 }
 
-void hexdump(std::ostream &os, std::span<const uint8_t> data) {
+void hexdump(std::ostream &os, std::span<const char> data) {
   int width = 16;
   std::stringstream ss_hex, ss_s;
   int addr_width = ceil(log2(data.size()) / 4);
   os << "0x" << std::hex << std::setw(addr_width) << std::setfill('0') << 0 << " ";
   for (size_t i = 0; i < data.size(); i++) {
-    ss_hex << std::hex << std::setw(2) << std::setfill('0') << (int) data[i] << ' ';
+    ss_hex << std::hex << std::setw(2) << std::setfill('0') << (int)(uint8_t) data[i] << ' ';
     if (std::isprint(data[i])) {
       ss_s << data[i];
     } else {
@@ -105,6 +106,10 @@ void hexdump(std::ostream &os, std::span<const uint8_t> data) {
   }
 }
 
+constexpr const char* escape_table[] = {
+    "\\0",0,0,0,  0,0,0,"\\a", "\\b","\\t","\\n","\\v", "\\f","\\r",0,0,
+};
+
 void Display::process_input() {
   bool verbose_read = true;
   bool has_color = true;
@@ -113,40 +118,16 @@ void Display::process_input() {
 
   int nread = read(subprocess_->tty_fd(), input_buffer.data(), input_buffer.size());
   for (int i = 0; i < nread; i++) {
-    char c = input_buffer[i];
+    uint32_t c = (uint8_t)input_buffer[i];
     auto input_type = tty_input_.receive_char(input_buffer[i]);
 
     if (input_type == TTYInputType::Char) {
       if (verbose_read) {
-        if (std::isprint(c)) {
-          log_stream_.put(c);
-          log_stream_.flush();
-        } else {
-          if (c == '\n') {
-            log_stream_.put(c);
-          } else {
-            if (has_color) {
-              log_stream_ << "\x1b[33m{\x1b[32m";
-            } else {
-              log_stream_ << "{";
-            }
-            log_stream_ << "\\x" << (int)c << "";
-            if (has_color) {
-              log_stream_ << "\x1b[33m}\x1b[0m";
-            } else {
-              log_stream_ << "}";
-            }
-            log_stream_.flush();
-          }
-        }
-        std::cout << "char at (" << std::dec << current_screen_->cursor_row << "," << current_screen_->cursor_col << "): 0x" <<
-                  std::setw(2) << std::setfill('0') << std::hex << (int)(uint8_t)c;
-        if (std::isprint(c) && c != '\n') {
-          std::cout << " '" << c << '\'';
-        }
-        std::cout << std::endl;
+        log_verbose_input_char(c, has_color);
       }
-      if (c == '\n') {
+      if (c == '\n' || c == '\f') {
+        // https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+        //  Form Feed or New Page (NP ).  (FF  is Ctrl-L).  FF  is treated the same as LF.
         current_screen_->new_line();
       } else if (c == 0x0f) {
         // switch to standard char set
@@ -167,28 +148,16 @@ void Display::process_input() {
         } else {
           current_screen_->cursor_col--;
         }
-      } else {
-        if (current_screen_->current_attrs.test(CHAR_ATTR_AUTO_WRAP_MODE)) {
-          // https://www.vt100.net/docs/vt510-rm/DECAWM.html
-          // If the DECAWM function is set,
-          // then graphic characters received when the cursor is at the right border of the page
-          //  appear at the beginning of the next line.
-          // Any text on the page scrolls up if the cursor is at the end of the scrolling region.
-          if (current_screen_->cursor_col == max_cols_) {
-            current_screen_->new_line();
-            current_screen_->carriage_return();
-          }
-          current_screen_->fill_current_cursor(c);
-          current_screen_->cursor_col++;
+      } else if (c == 0x0f || c == 0x0e) {
+        if (c == 0x0f) {
+          // select G0 character set
         } else {
-          // If the DECAWM function is reset,
-          // then graphic characters received when the cursor is at the right border of the page
-          //  replace characters already on the page.
-          current_screen_->fill_current_cursor(c);
-          if (current_screen_->cursor_col < max_cols_ - 1) {
-            current_screen_->cursor_col++;
-          }
+          std::cerr << "Warning, we do not support G1 character set";
         }
+      } else if (c < 0x20) {
+        // ignore unknown control characters
+      } else {
+        got_character(std::string(1, c));
       }
     } else if (input_type == TTYInputType::CSI) {
       auto ok = current_screen_->process_csi(tty_input_.buffer_);
@@ -255,6 +224,25 @@ void Display::process_input() {
           }
         }
       }
+    } else if (input_type == TTYInputType::UTF8) {
+      if (has_color) {
+        log_stream_ << "\x1b[33m{\x1b[32m";
+      } else {
+        log_stream_ << "{";
+      }
+      log_stream_ << "u ";
+      for (auto n : tty_input_.buffer_) {
+        log_stream_ << "\\x" << std::hex << std::setfill('0') << std::setw(2) << (uint32_t)(uint8_t)n;
+      }
+      if (has_color) {
+        log_stream_ << "\x1b[33m}\x1b[0m";
+      } else {
+        log_stream_ << "}";
+      }
+      log_stream_.flush();
+
+      got_character(tty_input_.buffer_);
+
     }
   }
 }
@@ -443,14 +431,22 @@ void Display::loop() {
 
     // Update window
     SDL_RenderPresent(renderer_);
+
+    auto t_present = std::chrono::high_resolution_clock::now();
+
     auto now = std::chrono::high_resolution_clock::now();
     if (has_input) {
-//      std::cerr << "Input latency "
-//                << "input " << std::chrono::duration<float, std::milli>(t_input1 - t0).count() << "ms" << std::endl
-//                << "shell " << std::chrono::duration<float, std::milli>(t_shell - t0).count() << "ms" << std::endl
-//                << "bg " << std::chrono::duration<float, std::milli>(t_bg - t0).count() << "ms" << std::endl
-//                << "chars " << std::chrono::duration<float, std::milli>(t_chars - t0).count() << "ms" << std::endl
-//                << "total " << std::chrono::duration<float, std::milli>(now - t0).count() << "ms" << std::endl;
+      auto total_latency_ms = std::chrono::duration<float, std::milli>(now - t0).count();
+      constexpr double latency_threshold_ms = 1;
+      if (total_latency_ms > latency_threshold_ms) {
+        std::cerr << "Input latency "
+                  << "  input " << std::chrono::duration<float, std::milli>(t_input1 - t0).count() << "ms" << std::endl
+                  << "  shell " << std::chrono::duration<float, std::milli>(t_shell - t0).count() << "ms" << std::endl
+                  << "  bg " << std::chrono::duration<float, std::milli>(t_bg - t0).count() << "ms" << std::endl
+                  << "  chars " << std::chrono::duration<float, std::milli>(t_chars - t0).count() << "ms" << std::endl
+                  << "  present " << std::chrono::duration<float, std::milli>(t_present- t0).count() << "ms" << std::endl
+                  << "  total " << total_latency_ms << "ms" << std::endl;
+      }
     }
 
     last_t = now;
@@ -463,7 +459,8 @@ Display::Display(
     const std::string &font_file_path,
     int font_size,
     const std::string &background_image_path,
-    const std::vector<std::string> &environment_variables) : log_stream_(log_stream) {
+    const std::vector<std::string> &environment_variables,
+    bool use_acceleration) : log_stream_(log_stream) {
 
   // We just hard-code an initial resolution.
   // After the window is created, it might be resized.
@@ -486,7 +483,7 @@ Display::Display(
 
   SDL_SetWindowResizable(window_, SDL_TRUE);
 
-  renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED);
+  renderer_ = SDL_CreateRenderer(window_, -1, use_acceleration ? SDL_RENDERER_ACCELERATED : SDL_RENDERER_SOFTWARE);
   if (!renderer_) {
     std::cerr << "Error creating renderer: " << SDL_GetError() << std::endl;
     abort();
@@ -641,6 +638,65 @@ void Display::switch_screen(bool alternate_screen) {
   } else {
     current_screen_ = default_screen_.get();
   }
+}
+void Display::got_character(std::string c) {
+  if (current_screen_->current_attrs.test(CHAR_ATTR_AUTO_WRAP_MODE)) {
+    // https://www.vt100.net/docs/vt510-rm/DECAWM.html
+    // If the DECAWM function is set,
+    // then graphic characters received when the cursor is at the right border of the page
+    //  appear at the beginning of the next line.
+    // Any text on the page scrolls up if the cursor is at the end of the scrolling region.
+    if (current_screen_->cursor_col == max_cols_) {
+      current_screen_->new_line();
+      current_screen_->carriage_return();
+    }
+    current_screen_->fill_current_cursor(std::move(c));
+    current_screen_->cursor_col++;
+  } else {
+    // If the DECAWM function is reset,
+    // then graphic characters received when the cursor is at the right border of the page
+    //  replace characters already on the page.
+    current_screen_->fill_current_cursor(std::move(c));
+    if (current_screen_->cursor_col < max_cols_ - 1) {
+      current_screen_->cursor_col++;
+    }
+  }
+
+}
+void Display::log_verbose_input_char(uint32_t c, bool has_color) {
+  if (std::isprint(c)) {
+    log_stream_.put(c);
+    log_stream_.flush();
+  } else {
+    if (c == '\n') {
+      log_stream_.put(c);
+    } else {
+      if (has_color) {
+        log_stream_ << "\x1b[33m{\x1b[32m";
+      } else {
+        log_stream_ << "{";
+      }
+
+      if (c < sizeof(escape_table)/sizeof(escape_table[0]) && escape_table[c]) {
+        log_stream_ << escape_table[c];
+      } else {
+        log_stream_ << "\\x" << std::setw(2) << std::setfill('0') << std::hex << c;
+      }
+      if (has_color) {
+        log_stream_ << "\x1b[33m}\x1b[0m";
+      } else {
+        log_stream_ << "}";
+      }
+      log_stream_.flush();
+    }
+  }
+  std::cout << "char at (" << std::dec << current_screen_->cursor_row << "," << current_screen_->cursor_col << "): 0x" <<
+            std::setw(2) << std::setfill('0') << std::hex << (int)(uint8_t)c;
+  if (std::isprint(c) && c != '\n') {
+    std::cout << " '" << c << '\'';
+  }
+  std::cout << std::endl;
+
 }
 
 }

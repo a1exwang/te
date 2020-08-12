@@ -19,20 +19,8 @@ struct _TTF_Font;
 typedef _TTF_Font TTF_Font;
 
 namespace te {
-
-class FontCache {
- public:
-  FontCache(SDL_Renderer *renderer, TTF_Font *font);
-  SDL_Texture *at(std::tuple<uint32_t, char> pos) const {
-    return fc.at(std::get<0>(pos))[std::get<1>(pos)];
-  }
- private:
-  std::unordered_map<uint32_t, std::vector<SDL_Texture*>> fc;
-  SDL_Renderer *renderer_;
-  TTF_Font *font_;
-};
-
 class Screen;
+class FontCache;
 class Display {
  public:
   Display(std::ostream &log_stream,
@@ -41,7 +29,8 @@ class Display {
           const std::string &font_file_path,
           int font_size,
           const std::string &background_image_path,
-          const std::vector<std::string> &environment_variables);
+          const std::vector<std::string> &environment_variables,
+          bool use_accleration);
 
   ~Display();
 
@@ -68,6 +57,8 @@ class Display {
 
   // utility functions
 
+  void got_character(std::string c);
+
   bool less_than(std::tuple<int, int> lhs, std::tuple<int, int> rhs) const {
     int n_lhs = std::get<0>(lhs) * max_cols_ + std::get<1>(lhs);
     int n_rhs = std::get<0>(rhs) * max_cols_ + std::get<1>(rhs);
@@ -85,6 +76,8 @@ class Display {
   std::tuple<int, int> window_to_console(int x, int y) const {
     return {y / glyph_height_, x / glyph_width_};
   }
+
+  void log_verbose_input_char(uint32_t c, bool has_color);
 
   void switch_screen(bool alternate_screen);
 

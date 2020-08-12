@@ -11,7 +11,21 @@ int main(int argc, char **argv, char **envp) {
 
   std::string font_file = "/usr/share/fonts/TTF/DejaVuSansMono.ttf";
   int font_size = 36;
-  std::ofstream log_stream("a.log");
-  te::Display display(log_stream, {"/bin/bash"}, "xterm", font_file, font_size, "/home/alexwang/bg.png", environments);
+  std::string log_file_path = "a.log";
+  std::ofstream log_stream(log_file_path, std::ios::trunc);
+  if (!log_stream) {
+    std::cerr << "Failed to open log file '" << log_file_path << "'" << std::endl;
+    abort();
+  }
+  bool use_acceleration = true;
+  te::Display display(
+      log_stream,
+      {"/bin/bash"},
+      "rxvt",
+      font_file,
+      font_size,
+      "/home/alexwang/bg.png",
+      environments,
+      use_acceleration);
   display.loop();
 }

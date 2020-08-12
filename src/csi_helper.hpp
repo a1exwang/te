@@ -8,7 +8,7 @@ namespace te {
 
 
 // parse format 123;444;;22
-std::vector<int> parse_csi_colon_ints(const std::vector<uint8_t> &seq, int start, int end, std::optional<int> default_value = 0) {
+std::vector<int> parse_csi_colon_ints(const std::string &seq, int start, int end, std::optional<int> default_value = 0) {
   if (start >= end) {
     if (default_value.has_value()) {
       return std::vector<int>(1, default_value.value());
@@ -82,7 +82,7 @@ void copy_vector_to_tuple(const std::vector<int> &vec, Tp &tp) {
 
 
 template <int N>
-typename NTuple<N>::type parse_csi_n(const std::vector<uint8_t> &seq, int start, int end, int default_value) {
+typename NTuple<N>::type parse_csi_n(const std::string &seq, int start, int end, int default_value) {
   auto ints = parse_csi_colon_ints(seq, start, end, default_value);
   if (ints.size() != N) {
     throw InvalidCSISeq();
@@ -94,7 +94,7 @@ typename NTuple<N>::type parse_csi_n(const std::vector<uint8_t> &seq, int start,
 }
 
 template <int N>
-typename NTuple<N>::type csi_n(const std::vector<uint8_t> &seq, int default_value) {
+typename NTuple<N>::type csi_n(const std::string &seq, int default_value) {
   return parse_csi_n<N>(seq, 0, seq.size() - 1, default_value);
 }
 };

@@ -98,7 +98,7 @@ Subprocess::Subprocess(std::string command_line,
     }
     // map stdin/stdout to tty fd
 
-    int ret = execve(command_line.c_str(), argv.data(), envp.data());
+    int ret = execve(command_line_.c_str(), argv.data(), envp.data());
     if (ret < 0) {
       perror("execve");
       abort();

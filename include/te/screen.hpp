@@ -18,7 +18,7 @@ class Screen {
  public:
   explicit Screen(Display *display);
 
-  bool process_csi(const std::vector<uint8_t> &seq);
+  bool process_csi(const std::string &seq);
 
   void reset_tty_buffer() {
     rows_.clear();
@@ -59,8 +59,9 @@ class Screen {
   void carriage_return() {
     cursor_col = 0;
   }
-  void fill_current_cursor(char c) {
-    get_row(cursor_row)[cursor_col].c = c;
+  // c: one char, maybe utf8
+  void fill_current_cursor(std::string c) {
+    get_row(cursor_row)[cursor_col].c = std::move(c);
     get_row(cursor_row)[cursor_col].bg_color = current_bg_color;
     get_row(cursor_row)[cursor_col].fg_color = current_fg_color;
   }

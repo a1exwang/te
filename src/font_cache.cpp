@@ -1,4 +1,4 @@
-#include <te/display.hpp>
+#include <te/font_cache.hpp>
 
 #include <cassert>
 
@@ -10,6 +10,7 @@
 #include <SDL2/SDL_ttf.h>
 
 #include <te/screen.hpp>
+#include <te/display.hpp>
 
 namespace std {
   template <>
@@ -29,6 +30,10 @@ namespace std {
 
 namespace te {
 
+std::vector<std::string> extra_chars = {
+    "␣",
+};
+
 FontCache::FontCache(SDL_Renderer *renderer, TTF_Font *font) :renderer_(renderer), font_(font) {
 
   std::vector<uint32_t> styles = {
@@ -45,29 +50,45 @@ FontCache::FontCache(SDL_Renderer *renderer, TTF_Font *font) :renderer_(renderer
       TTF_STYLE_UNDERLINE | TTF_STYLE_BOLD | TTF_STYLE_ITALIC,
   };
 
+  SDL_Color white_color{0xff,0xff,0xff,0xff};
   for (auto style : styles) {
-    auto [it, ok] = fc.insert({style, {128, nullptr}});
+    auto [it, ok] = fc.insert({style, {}});
     assert(ok);
 
     TTF_SetFontStyle(font_, style);
     for (int i = 0; i < 128; i++) {
       if (std::isprint(i)) {
-        SDL_Color white_color{0xff,0xff,0xff,0xff};
         SDL_Surface *text_surf = TTF_RenderGlyph_Blended(font_, i, white_color);
         if (!text_surf) {
           std::cerr << "Failed to TTF_RenderGlyph_Blended" << SDL_GetError() << std::endl;
           abort();
         }
 
-        auto text = SDL_CreateTextureFromSurface(renderer_, text_surf);
-        if (!text) {
+        auto texture = SDL_CreateTextureFromSurface(renderer_, text_surf);
+        if (!texture) {
           std::cerr << "Failed to SDL_CreateTextureFromSurface when creating fonts:" << SDL_GetError() << std::endl;
           abort();
         }
 
-        it->second[i] = text;
+        it->second[std::string(1, i)] = texture;
       }
     }
+    for (const auto &extra_char : extra_chars) {
+      SDL_Surface *text_surf = TTF_RenderUTF8_Blended(font_, extra_char.c_str(), white_color);
+      if (!text_surf) {
+        std::cerr << "Failed to TTF_RenderGlyph_Blended" << SDL_GetError() << std::endl;
+        abort();
+      }
+
+      auto text = SDL_CreateTextureFromSurface(renderer_, text_surf);
+      if (!text) {
+        std::cerr << "Failed to SDL_CreateTextureFromSurface when creating fonts:" << SDL_GetError() << std::endl;
+        abort();
+      }
+
+      it->second[extra_char] = text;
+    }
+
   }
 }
 
@@ -116,50 +137,33 @@ void Display::render_chars() {
       SDL_SetRenderDrawColor(renderer_, bg.r, bg.g, bg.b, background_image_opaque);
       SDL_RenderFillRect(renderer_, &glyph_box);
 
-      auto character = c.c;
-      if (!std::isprint(c.c) && character != 0) {
-        character = '?';
+      // get to character's cached texture
+      uint32_t style = TTF_STYLE_NORMAL;
+      if (c.attr.test(CHAR_ATTR_UNDERLINE)) {
+        style |= TTF_STYLE_UNDERLINE;
+      }
+      if (c.attr.test(CHAR_ATTR_BOLD)) {
+        style |= TTF_STYLE_BOLD;
+      }
+      if (c.attr.test(CHAR_ATTR_ITALIC)) {
+        style |= TTF_STYLE_ITALIC;
+      }
+      if (TTF_GetFontStyle(font_) != style) {
+        TTF_SetFontStyle(font_, style);
       }
 
-      if (character != ' ' && character != 0) {
-        uint32_t style = TTF_STYLE_NORMAL;
-        if (c.attr.test(CHAR_ATTR_UNDERLINE)) {
-          style |= TTF_STYLE_UNDERLINE;
-        }
-        if (c.attr.test(CHAR_ATTR_BOLD)) {
-          style |= TTF_STYLE_BOLD;
-        }
-        if (c.attr.test(CHAR_ATTR_ITALIC)) {
-          style |= TTF_STYLE_ITALIC;
-        }
-        if (TTF_GetFontStyle(font_) != style) {
-          TTF_SetFontStyle(font_, style);
-        }
-        auto t0 = std::chrono::high_resolution_clock::now();
-        SDL_Color white_color{0xff,0xff,0xff,0xff};
-//        SDL_Surface *text_surf = TTF_RenderGlyph_Blended(font_, character, white_color);
-//        if (!text_surf) {
-//          std::cerr << "Failed to TTF_RenderGlyph_Blended" << SDL_GetError() << std::endl;
-//          abort();
-//        }
-//        auto text = SDL_CreateTextureFromSurface(renderer_, text_surf);
-        auto text = font_cache_->at(std::make_tuple(style, character));
-
-
-        auto t1 = std::chrono::high_resolution_clock::now();
-
-        SDL_SetTextureColorMod(text, fg.r, fg.g, fg.b);
-        SDL_RenderCopy(renderer_, text, NULL, &glyph_box);
-        auto t2 = std::chrono::high_resolution_clock::now();
-
-//        SDL_DestroyTexture(text);
-//        SDL_FreeSurface(text_surf);
-//        auto t3 = std::chrono::high_resolution_clock::now();
-//        std::cout << std::chrono::duration<double, std::milli>(t1 - t0).count() << "ms "
-//                  << std::chrono::duration<double, std::milli>(t2 - t0).count() << "ms "
-//                  << std::chrono::duration<double, std::milli>(t3 - t0).count() << "ms "
-//                  << std::endl;
+      if (c.c.empty() || (c.c.size() == 1 && c.c[0] == 0 || c.c[0] == ' ')) {
+        continue;
       }
+
+      auto texture = font_cache_->at(std::make_tuple(style, c.c));
+      if (!texture) {
+        texture = font_cache_->at(std::make_tuple(style, "?"));
+        assert(texture);
+      }
+
+      SDL_SetTextureColorMod(texture, fg.r, fg.g, fg.b);
+      SDL_RenderCopy(renderer_, texture, NULL, &glyph_box);
     }
   }
 }

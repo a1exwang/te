@@ -21,13 +21,13 @@ Screen::Screen(Display *display) :display_(display) {
 
 
 // parse CSI sequence and act correctly
-bool Screen::process_csi(const std::vector<uint8_t> &seq) {
+bool Screen::process_csi(const std::string &seq) {
   try {
     if (seq.empty()) {
       return false;
     }
 
-    auto op = seq.back();
+    uint8_t op = seq.back();
     if ('A' <= op && op <= 'D') {
       // CSI A up
       // CSI B down

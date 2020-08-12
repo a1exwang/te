@@ -66,7 +66,7 @@ struct Char {
   void reset() {
     *this = Char();
   }
-  char c = 0;
+  std::string c;
   Color fg_color = ColorWhite;
   Color bg_color = ColorBlack; // TODO
 

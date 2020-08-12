@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cinttypes>
+#include <string>
 #include <vector>
 
 namespace te {
@@ -11,21 +12,24 @@ enum class TTYInputType {
   Unknown,
   Intermediate,
   TerminatedByST,
+  UTF8,
 };
 
 class TTYInput {
  public:
-  TTYInputType receive_char(uint8_t c);
+  TTYInputType receive_char(char c);
 
   enum class InputState {
     Idle,
     Escape,
     CSI,
     WaitForST,
+    UTF8,
   };
 
   InputState input_state = InputState::Idle;
-  std::vector<std::uint8_t> buffer_;
+  int utf8_read = 0, utf8_total = 0;
+  std::string buffer_;
 };
 
 
