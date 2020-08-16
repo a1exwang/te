@@ -10,7 +10,7 @@ int main(int argc, char **argv, char **envp) {
   }
 
   std::string font_file = "/usr/share/fonts/TTF/DejaVuSansMono.ttf";
-  int font_size = 36;
+  int font_size = 34;
   std::string log_file_path = "a.log";
   std::ofstream log_stream(log_file_path, std::ios::trunc);
   if (!log_stream) {

@@ -31,7 +31,7 @@ namespace std {
 namespace te {
 
 std::vector<std::string> extra_chars = {
-    "␣",
+    "␣", "─",
 };
 
 FontCache::FontCache(SDL_Renderer *renderer, TTF_Font *font) :renderer_(renderer), font_(font) {
